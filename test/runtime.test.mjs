@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as runtime from '../src/runtime.js';
 import {
     applyReminderInjection,
     registerGenerationHook,
@@ -23,6 +24,7 @@ function createContext() {
         event_types: {
             GENERATION_AFTER_COMMANDS: 'generation_after_commands',
             GENERATION_STARTED: 'generation_started',
+            CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
         },
         eventSource: {
             on(type, handler) {
@@ -110,4 +112,92 @@ test('registerGenerationHook falls back to GENERATION_STARTED when needed', () =
     registerGenerationHook(context, () => ({ enabled: true, promptText: 'x' }), () => {});
 
     assert.equal(context.handlers.has('generation_started'), true);
+});
+
+test('finalizeReminderInChat moves the existing reminder to the final system message without duplication', () => {
+    assert.equal(typeof runtime.finalizeReminderInChat, 'function');
+
+    const reminder = 'FINAL REMINDER';
+    const eventData = {
+        chat: [
+            { role: 'system', content: 'base system' },
+            { role: 'system', content: reminder },
+            { role: 'assistant', content: 'another late prompt' },
+            { role: 'user', content: 'latest user turn' },
+        ],
+    };
+
+    const result = runtime.finalizeReminderInChat(eventData, { enabled: true, promptText: reminder });
+
+    assert.deepEqual(eventData.chat, [
+        { role: 'system', content: 'base system' },
+        { role: 'assistant', content: 'another late prompt' },
+        { role: 'user', content: 'latest user turn' },
+        { role: 'system', content: reminder },
+    ]);
+    assert.deepEqual(result, { active: true, textLength: reminder.length, movedExisting: true });
+    assert.equal(eventData.chat.filter((message) => message.content === reminder).length, 1);
+});
+
+test('registerFinalPromptHook finalizes the reminder on CHAT_COMPLETION_PROMPT_READY and reports the final injection', async () => {
+    assert.equal(typeof runtime.registerFinalPromptHook, 'function');
+
+    const context = createContext();
+    const reminder = 'FINAL STAGE REMINDER';
+    const seen = [];
+
+    const cleanup = runtime.registerFinalPromptHook(
+        context,
+        () => ({ enabled: true, promptText: reminder }),
+        (info) => seen.push(info),
+        () => 777,
+    );
+
+    const handler = context.handlers.get('chat_completion_prompt_ready');
+    assert.equal(typeof handler, 'function');
+
+    const eventData = {
+        chat: [
+            { role: 'system', content: reminder },
+            { role: 'assistant', content: 'late prompt layer' },
+        ],
+    };
+
+    await handler(eventData);
+
+    assert.deepEqual(eventData.chat.at(-1), { role: 'system', content: reminder });
+    assert.deepEqual(seen, [{ at: 777, textLength: reminder.length, finalStage: true, movedExisting: true }]);
+
+    cleanup();
+    assert.equal(context.handlers.has('chat_completion_prompt_ready'), false);
+});
+
+test('finalizeReminderInChat appends the reminder when the staged copy is missing', () => {
+    const reminder = 'APPEND ME LAST';
+    const eventData = {
+        chat: [
+            { role: 'system', content: 'base system' },
+            { role: 'user', content: 'hello' },
+        ],
+    };
+
+    const result = runtime.finalizeReminderInChat(eventData, { enabled: true, promptText: reminder });
+
+    assert.deepEqual(eventData.chat.at(-1), { role: 'system', content: reminder });
+    assert.deepEqual(result, { active: true, textLength: reminder.length, movedExisting: false });
+});
+
+test('finalizeReminderInChat leaves the final prompt untouched when reminder is disabled', () => {
+    const eventData = {
+        chat: [
+            { role: 'system', content: 'base system' },
+            { role: 'user', content: 'hello' },
+        ],
+    };
+    const before = structuredClone(eventData.chat);
+
+    const result = runtime.finalizeReminderInChat(eventData, { enabled: false, promptText: 'disabled' });
+
+    assert.deepEqual(eventData.chat, before);
+    assert.deepEqual(result, { active: false, textLength: 0, movedExisting: false });
 });

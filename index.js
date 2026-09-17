@@ -1,5 +1,5 @@
 import { ensureSettings, getReminderText } from './src/reminder-core.js';
-import { applyReminderInjection, registerGenerationHook } from './src/runtime.js';
+import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
 
 const ROOT_ID = 'st-auto-prompt-reminder-settings';
 const TEXTAREA_ID = 'st-auto-prompt-text';
@@ -8,6 +8,7 @@ const STATUS_ID = 'st-auto-prompt-status';
 
 let initialized = false;
 let cleanupGenerationHook = null;
+let cleanupFinalPromptHook = null;
 let lastInjectionInfo = null;
 
 function getStatusText(settings) {
@@ -26,6 +27,10 @@ function getStatusText(settings) {
     }
 
     const time = new Date(lastInjectionInfo.at).toLocaleTimeString();
+    if (lastInjectionInfo.finalStage) {
+        return `✓ Đã chèn ở cuối prompt gửi AI · ${lastInjectionInfo.textLength} ký tự · ${time}`;
+    }
+
     return `✓ Đã chèn vào lượt tạo gần nhất · ${lastInjectionInfo.textLength} ký tự · ${time}`;
 }
 
@@ -74,7 +79,7 @@ function createSettingsPanel(context, settings) {
 
                 <div id="${STATUS_ID}" class="st-auto-prompt-status" aria-live="polite"></div>
                 <small class="st-auto-prompt-hint">
-                    Nội dung được tự lưu. Khi bật, extension chèn nguyên văn prompt này dưới dạng system injection ở depth 0 trước mỗi generation.
+                    Nội dung được tự lưu. Extension chèn ở depth 0 để Prompt Reviewer nhìn thấy, sau đó đưa cùng system reminder xuống cuối prompt ngay trước khi gửi AI.
                 </small>
             </div>
         </div>
@@ -143,11 +148,23 @@ async function init() {
         context,
         () => settings,
         (info) => {
-            lastInjectionInfo = info;
-            renderStatus(settings);
-            console.debug('[ST Auto Prompt Reminder] Injected reminder into generation.', info);
+            console.debug('[ST Auto Prompt Reminder] Staged reminder for generation.', info);
         },
     );
+
+    try {
+        cleanupFinalPromptHook = registerFinalPromptHook(
+            context,
+            () => settings,
+            (info) => {
+                lastInjectionInfo = info;
+                renderStatus(settings);
+                console.debug('[ST Auto Prompt Reminder] Finalized reminder as the last system message.', info);
+            },
+        );
+    } catch (error) {
+        console.warn('[ST Auto Prompt Reminder] Final-stage prompt hook is unavailable; using depth-0 injection only.', error);
+    }
 
     createSettingsPanel(context, settings);
     console.log('[ST Auto Prompt Reminder] Loaded.');
@@ -156,6 +173,8 @@ async function init() {
 export function onDisable() {
     cleanupGenerationHook?.();
     cleanupGenerationHook = null;
+    cleanupFinalPromptHook?.();
+    cleanupFinalPromptHook = null;
 
     const context = globalThis.SillyTavern?.getContext?.();
     if (context) {

@@ -12,7 +12,7 @@ test('manifest loads the extension entry point and stylesheet', async () => {
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.1.0');
+    assert.equal(manifest.version, '0.1.1');
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
 
@@ -32,4 +32,12 @@ test('entry point refreshes injection immediately when UI settings change', asyn
     assert.match(source, /applyReminderInjection/);
     assert.match(source, /addEventListener\('input'/);
     assert.match(source, /addEventListener\('change'/);
+});
+
+test('entry point registers final-stage prompt enforcement for chat completion', async () => {
+    const source = await read('../index.js');
+
+    assert.match(source, /registerFinalPromptHook/);
+    assert.match(source, /cleanupFinalPromptHook/);
+    assert.match(source, /finalStage/);
 });
