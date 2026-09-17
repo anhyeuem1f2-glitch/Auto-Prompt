@@ -2,83 +2,159 @@
 
 ## Phiên bản
 
-`v0.1.2` — 2026-09-17
+`v0.2.0` — 2026-09-17
 
-## Mục tiêu V1
+## Mục tiêu
 
-Một extension SillyTavern tối giản cho phép người dùng viết toàn bộ lời nhắc trong một textarea và tự động chèn nguyên văn nội dung đó vào mỗi Chat Completion mà không cần lặp lại reminder trong message chat.
+Nâng extension từ một textarea Global thành prompt manager nhiều lệnh, có thể dùng prompt toàn cục và prompt riêng theo card, nhưng vẫn giữ cơ chế đã kiểm chứng: **chỉ một system message tổng hợp ở cuối final Chat Completion prompt**.
 
-## Thay đổi v0.1.2
+## Thay đổi v0.2.0
 
-### Lý do sửa
+- Schema settings mới `schemaVersion: 2`.
+- Hỗ trợ nhiều prompt với các trường:
+  - `id`
+  - `name`
+  - `enabled`
+  - `scope: global | character`
+  - `character`
+  - `content`
+  - `order`
+- Prompt Global luôn cộng vào nếu bật.
+- Prompt Character chỉ cộng vào khi binding khớp card đang hoạt động.
+- Global + matching Character prompt cộng dồn.
+- Prompt được sort theo `order`, merge bằng hai newline, rồi inject thành đúng một final system message.
+- UI mới có add/edit/delete, ON/OFF từng prompt, badge scope, lên/xuống, và nút **Gắn với card hiện tại**.
+- Status final hiển thị số prompt + tổng số ký tự.
+- Tự migrate v0.1.2 `promptText` thành prompt Global tên `Prompt cũ`, giữ nguyên authored text.
+- Legacy staged key tiếp tục luôn rỗng để không tái xuất hiện bug duplicate.
+- Version bump `0.2.0`.
 
-Test thật trên SillyTavern xác nhận v0.1.1 đã đưa reminder xuống cuối prompt và model làm theo marker, nhưng Prompt Reviewer cho thấy reminder xuất hiện **hai lần**: một bản staged cũ và một bản final ở cuối. Nguyên nhân là staged `setExtensionPrompt()` đã được merge vào layer prompt trước khi `CHAT_COMPLETION_PROMPT_READY` chạy, nên de-duplicate theo `eventData.chat` không thể xóa bản đã merge đó.
+## Character identity
 
-### Cách sửa
+- Ưu tiên avatar/card filename làm key persisted.
+- Tên card được lưu để hiển thị trong UI.
+- Single chat: ưu tiên `characterId` + `characters`.
+- Group-style context: fallback qua `name2` để tìm character tương ứng trong `characters`.
+- Nếu không resolve được card đang phản hồi: chỉ prompt Global được chèn.
 
-- Không còn stage reminder bằng `setExtensionPrompt()`.
-- Key cũ `st_auto_prompt_reminder.main` luôn được ghi chuỗi rỗng để dọn staged prompt từ v0.1.1.
-- `CHAT_COMPLETION_PROMPT_READY` là nơi duy nhất chèn reminder thật.
-- Final hook de-duplicate system message trùng và append đúng một reminder ở cuối `chat`.
-- Bỏ field `author` khỏi `manifest.json` và bỏ tên cá nhân khỏi metadata/license hiển thị của project.
-- Bump version lên `0.1.2`.
+## Injection pipeline
 
-## Tính năng hiện có
+```text
+Settings schema v2
+    ↓
+Resolve active card
+    ↓
+Enabled Global prompts
++ enabled matching Character prompts
+    ↓
+Sort by order
+    ↓
+Merge into one text block
+    ↓
+CHAT_COMPLETION_PROMPT_READY
+    ↓
+Append exactly one final system message
+```
 
-- Một toggle bật/tắt.
-- Một textarea lớn, không chia category/reminder type.
-- Autosave vào `extensionSettings.st_auto_prompt_reminder`.
-- Clear legacy staged slot ở mỗi generation.
-- Final Chat Completion injection ở `CHAT_COMPLETION_PROMPT_READY`.
-- Reminder được đặt thành system message cuối cùng.
-- Console log có prefix `[ST Auto Prompt Reminder]`.
-- Test Node không cần dependency ngoài.
+## Migration
+
+Input cũ:
+
+```json
+{
+  "enabled": true,
+  "promptText": "..."
+}
+```
+
+Sau migration:
+
+```json
+{
+  "enabled": true,
+  "schemaVersion": 2,
+  "prompts": [
+    {
+      "id": "...",
+      "name": "Prompt cũ",
+      "enabled": true,
+      "scope": "global",
+      "character": null,
+      "content": "...",
+      "order": 0
+    }
+  ]
+}
+```
+
+`promptText` cũ chỉ bị xóa sau khi nội dung đã được copy vào entry mới.
 
 ## Kiểm thử tự động
+
+Lệnh:
 
 ```bash
 npm test
 npm run check
 ```
 
-Test bao phủ settings, clear staged slot, generation hook, final-stage de-duplicate/single-copy injection, disable behavior, manifest và entry-point wiring.
+Kết quả verification source v0.2.0: **30/30 test pass**, syntax check pass.
+
+Coverage v0.2.0 gồm:
+
+- migrate v0.1.2 không mất text
+- create/normalize schema v2
+- resolve card bằng avatar/name
+- group-style `name2` fallback
+- multiple Global merge đúng order
+- disabled/blank prompt bị bỏ qua
+- matching Character prompt được cộng
+- non-matching Character prompt bị bỏ
+- không có active card => Global only
+- final prompt chỉ có một aggregate system message
+- legacy staged slot luôn clear
+- extension disable behavior
+- UI contract cho add/edit/delete/reorder/bind-current-card
+- manifest/version contract `0.2.0`
 
 ## Test thật cần làm trên SillyTavern
 
-Dùng reminder:
+1. Sau khi upgrade từ v0.1.2, kiểm tra prompt cũ xuất hiện thành `Prompt cũ` và nội dung còn nguyên.
+2. Tạo hai prompt Global; Prompt Reviewer phải thấy cả hai nội dung ghép trong một block cuối.
+3. Tạo prompt Character, bind card A; generate card A => có prompt Character.
+4. Chuyển sang card B => prompt Character của A biến mất, Global vẫn còn.
+5. Dùng marker:
 
 ```text
-Hãy làm đúng thiết lập nhân vật
-Trong phần <story_driver>, bắt buộc thêm đúng một dòng:
 [AutoPromptCheck]: EXTENSION_ACTIVE
 ```
 
-Kiểm tra:
-
-1. Prompt Reviewer chỉ thấy reminder **một lần**.
-2. Bản đó nằm ở cuối prompt.
-3. Status UI hiện `✓ Đã chèn ở cuối prompt gửi AI ...`.
-4. Output model có `[AutoPromptCheck]: EXTENSION_ACTIVE` trong `<story_driver>`.
+để xác nhận AI thực sự đọc aggregate reminder.
 
 ## Giới hạn đã biết
 
-- Một reminder global.
-- Không có per-character/per-chat/preset profile.
-- Final-stage injection hiện áp dụng cho Chat Completion; Text Completion chưa có final-string injection riêng.
-- Không có raw final HTTP payload inspector riêng.
+- Final hook hiện áp dụng cho Chat Completion; Text Completion chưa có đường final-string riêng.
+- V0.2.0 chỉ có nút bind card hiện tại, chưa có browser chọn mọi card trong thư viện.
+- Group chat phụ thuộc speaker/card SillyTavern expose qua context; resolve thất bại sẽ fallback Global-only.
+- Reorder dùng nút lên/xuống, chưa drag-and-drop.
+- Chưa có scheduling/frequency, regex condition, generation filters hoặc priority tiers.
 
-## File cần ghi đè/push GitHub cho v0.1.2
+## File cần ghi đè/push GitHub cho v0.2.0
 
 ```text
 manifest.json
 package.json
 index.js
+style.css
+src/reminder-core.js
 src/runtime.js
+test/reminder-core.test.mjs
 test/runtime.test.mjs
 test/extension-contract.test.mjs
 README.md
 BAN_GIAO_DU_AN.md
-LICENSE
+docs/superpowers/specs/2026-09-17-multi-prompt-character-binding-design.md
+docs/superpowers/plans/2026-09-17-multi-prompt-character-binding-implementation.md
 ```
 
-Các file khác không đổi.
+`LICENSE` không đổi ở v0.2.0.

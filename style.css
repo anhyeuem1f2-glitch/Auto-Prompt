@@ -11,7 +11,8 @@
     cursor: pointer;
 }
 
-#st-auto-prompt-reminder-settings #st-auto-prompt-enabled {
+#st-auto-prompt-reminder-settings #st-auto-prompt-enabled,
+#st-auto-prompt-reminder-settings .st-auto-prompt-entry-enabled {
     appearance: auto !important;
     -webkit-appearance: checkbox !important;
     width: 18px;
@@ -20,17 +21,127 @@
     flex: 0 0 auto;
 }
 
-#st-auto-prompt-reminder-settings .st-auto-prompt-label {
-    font-weight: 600;
-    margin-top: 2px;
+#st-auto-prompt-reminder-settings .st-auto-prompt-toolbar,
+#st-auto-prompt-reminder-settings .st-auto-prompt-editor-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
 }
 
-#st-auto-prompt-reminder-settings .st-auto-prompt-textarea {
+#st-auto-prompt-reminder-settings .st-auto-prompt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 7px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.2));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row.is-selected {
+    outline: 1px solid var(--SmartThemeQuoteColor, currentColor);
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row-toggle {
+    display: flex;
+    align-items: center;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row-main {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-badge {
+    display: inline-block;
+    max-width: 100%;
+    margin-top: 3px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(127, 127, 127, 0.22);
+    font-size: 0.78em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row-actions {
+    display: flex;
+    gap: 4px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-row-actions .menu_button,
+#st-auto-prompt-reminder-settings .st-auto-prompt-editor-close {
+    min-width: 30px;
+    padding: 4px 7px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.2));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.16);
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-editor[hidden] {
+    display: none;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-weight: 600;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-field .text_pole {
+    font-weight: 400;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-editor-content {
     width: 100%;
-    min-height: 260px;
+    min-height: 220px;
     resize: vertical;
     box-sizing: border-box;
     line-height: 1.45;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-binding-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-binding {
+    flex: 1 1 180px;
+    font-size: 0.9em;
+    opacity: 0.9;
 }
 
 #st-auto-prompt-reminder-settings .st-auto-prompt-status {
@@ -39,7 +150,26 @@
     opacity: 0.95;
 }
 
+#st-auto-prompt-reminder-settings .st-auto-prompt-empty,
 #st-auto-prompt-reminder-settings .st-auto-prompt-hint {
     opacity: 0.75;
     line-height: 1.4;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-prompt-empty {
+    padding: 10px;
+    border: 1px dashed var(--SmartThemeBorderColor, rgba(255,255,255,.2));
+    border-radius: 8px;
+    text-align: center;
+}
+
+@media (max-width: 700px) {
+    #st-auto-prompt-reminder-settings .st-auto-prompt-row {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    #st-auto-prompt-reminder-settings .st-auto-prompt-row-actions {
+        grid-column: 2;
+        justify-content: flex-end;
+    }
 }

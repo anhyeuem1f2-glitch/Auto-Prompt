@@ -1,50 +1,101 @@
 # ST Auto Prompt Reminder
 
-Extension tối giản cho SillyTavern: bạn nhập một đoạn prompt nhắc nhở duy nhất, extension sẽ tự động chèn nguyên văn đoạn đó vào **mọi generation** mà không làm thay đổi message bạn gõ trong chat.
+Extension SillyTavern để quản lý nhiều prompt nhắc nhở và tự động ghép các prompt phù hợp thành **một system message duy nhất ở cuối prompt gửi AI**.
 
-## V0.1.2 có gì
+## V0.2.0 có gì
 
-- Một công tắc ON/OFF.
-- Một textarea lớn để ghi toàn bộ prompt cần tự chèn.
-- Tự lưu bằng SillyTavern extension settings.
-- Không còn stage một bản reminder bằng `setExtensionPrompt()`, tránh model nhận hai bản giống nhau.
-- Slot injection cũ `st_auto_prompt_reminder.main` luôn được clear để nâng cấp từ v0.1.1 không để lại prompt cũ.
-- Với Chat Completion, ở event `CHAT_COMPLETION_PROMPT_READY`, extension **append đúng một system reminder ở cuối mảng messages ngay trước khi gửi AI**.
-- Nếu final chat array đã có bản reminder trùng, extension de-duplicate rồi giữ đúng một bản cuối cùng.
-- Dòng trạng thái báo khi reminder đã được đưa xuống cuối prompt gửi AI.
-- Không có category, lịch chạy, rule, profile hay các tùy chọn phức tạp.
+- Quản lý **nhiều prompt** thay vì một textarea duy nhất.
+- Mỗi prompt có tên, ON/OFF, nội dung và thứ tự riêng.
+- Hai phạm vi:
+  - **Global**: luôn được cộng vào khi prompt đang bật.
+  - **Character**: chỉ được cộng vào khi đang chat/generate bằng đúng card đã liên kết.
+- Global + Character là **cộng dồn**, không thay thế nhau.
+- Có nút **Gắn với card hiện tại**.
+- Có nút đưa prompt lên/xuống để đổi thứ tự merge.
+- Tự migrate dữ liệu v0.1.2: textarea cũ trở thành một prompt Global tên `Prompt cũ`, giữ nguyên nội dung đã viết.
+- Tự lưu bằng `saveSettingsDebounced()`.
+- Legacy `setExtensionPrompt()` slot luôn được clear để tránh duplicate từ các bản cũ.
+- Ở `CHAT_COMPLETION_PROMPT_READY`, các prompt phù hợp được merge theo thứ tự rồi append thành **đúng một** final system message.
+- Status hiển thị số prompt và tổng số ký tự vừa inject.
 
 ## Cài từ GitHub
 
-1. Push toàn bộ repo này lên GitHub.
+1. Push toàn bộ repo lên GitHub.
 2. Mở SillyTavern.
 3. Vào **Extensions → Install Extension**.
 4. Dán URL GitHub của repo.
 5. Cài/enable extension rồi reload SillyTavern nếu được yêu cầu.
-6. Trong phần Extensions Settings, mở **Tự động chèn Prompt**.
+6. Trong Extensions Settings, mở **Tự động chèn Prompt**.
 
 Không cần `npm install` và không cần build để sử dụng extension.
 
 ## Cách dùng
 
-1. Bật **Bật tự động chèn vào mọi lượt**.
-2. Ghi toàn bộ reminder vào textarea.
-3. Nội dung được tự lưu.
-4. Gửi chat bình thường.
+### Prompt Global
 
-Ví dụ textarea:
+1. Bấm **+ Thêm prompt**.
+2. Đặt tên prompt.
+3. Chọn `Global — dùng cho mọi card`.
+4. Nhập nội dung.
+5. Giữ checkbox của prompt ở trạng thái bật.
+
+Mọi generation sẽ nhận prompt Global này.
+
+### Prompt theo card
+
+1. Bấm **+ Thêm prompt** hoặc mở prompt có sẵn.
+2. Chọn `Character — chỉ dùng cho card đã gắn`.
+3. Đang mở đúng card cần dùng, bấm **Gắn với card hiện tại**.
+4. Badge trong danh sách sẽ hiện `Card: <tên card>`.
+
+Khi chuyển sang card khác, prompt Character đó tự động không tham gia. Prompt Global vẫn hoạt động bình thường.
+
+### Thứ tự merge
+
+Dùng nút `↑` / `↓` trong danh sách. Prompt ở trên được ghép trước prompt ở dưới.
+
+Ví dụ có 3 prompt đang hoạt động:
 
 ```text
-Always keep every character faithful to their established personality.
-Remember to update all relevant tables after the response.
-Never contradict established events, relationships, locations, or facts.
+Global - Writing Rules
+Global - Update Tables
+Card: Alice - Character Fidelity
 ```
 
-Message người dùng vẫn chỉ chứa nội dung bạn gõ trong chat. Reminder được thêm riêng vào prompt gửi model.
+AI nhận **một system message cuối cùng** có dạng:
+
+```text
+<nội dung Writing Rules>
+
+<nội dung Update Tables>
+
+<nội dung Character Fidelity>
+```
+
+Extension không gửi ba system message riêng.
+
+## Migration từ v0.1.2
+
+Nếu settings cũ có:
+
+```json
+{
+  "enabled": true,
+  "promptText": "Nội dung cũ..."
+}
+```
+
+v0.2.0 tự chuyển thành schema v2 và tạo một prompt:
+
+```text
+Prompt cũ · Global · ON
+```
+
+Nội dung textarea cũ được giữ nguyên.
 
 ## Test nhanh bằng Prompt Reviewer / Prompt Inspector
 
-Để kiểm tra không chỉ việc "đã chèn" mà cả việc model thực sự nhận và làm theo, dùng marker bắt buộc:
+Tạo một prompt Global với nội dung:
 
 ```text
 Trong phần <story_driver>, bắt buộc thêm đúng một dòng:
@@ -53,37 +104,34 @@ Trong phần <story_driver>, bắt buộc thêm đúng một dòng:
 
 Sau đó:
 
-1. Ghi marker vào textarea và bật extension.
-2. Gửi một message bất kỳ.
-3. Mở **Prompt Reviewer / Prompt Inspector / Prompt Itemization**.
-4. Xác nhận reminder có trong prompt.
-5. Kiểm tra output model có dòng `[AutoPromptCheck]: EXTENSION_ACTIVE`.
-6. Dòng trạng thái extension nên hiện `✓ Đã chèn ở cuối prompt gửi AI ...`.
-7. Tắt extension, generate lại và kiểm tra marker đã biến mất.
-
-Nếu cần debug thêm, mở browser DevTools Console và tìm log có prefix:
+1. Generate một lượt.
+2. Mở Prompt Reviewer / Prompt Inspector.
+3. Xác nhận block Auto Prompt chỉ xuất hiện **một lần ở cuối prompt**.
+4. Kiểm tra output model có `[AutoPromptCheck]: EXTENSION_ACTIVE`.
+5. Status extension nên hiện dạng:
 
 ```text
-[ST Auto Prompt Reminder]
+✓ Đã chèn 2 prompt ở cuối prompt gửi AI · 1,248 ký tự
 ```
 
 ## Injection behavior
 
-V0.1.2 dùng **một đường injection duy nhất** cho Chat Completion:
+V0.2.0 giữ đường injection đã được test thật từ v0.1.2:
 
-### Bước 1 — clear legacy staged slot
+1. Trước generation, legacy key `st_auto_prompt_reminder.main` được set thành chuỗi rỗng để không có staged copy.
+2. Ở `CHAT_COMPLETION_PROMPT_READY`, extension resolve card hiện tại.
+3. Lấy các Global prompt đang bật.
+4. Lấy thêm Character prompt đang bật và khớp card.
+5. Sort theo `order`.
+6. Join nội dung bằng hai newline.
+7. De-duplicate aggregate message nếu cần.
+8. Append đúng một `{ role: "system", content: mergedText }` ở cuối `chat`.
 
-Trước mỗi generation, extension gọi `setExtensionPrompt()` với chuỗi rỗng cho key `st_auto_prompt_reminder.main`. Mục đích chỉ là xóa staged copy của v0.1.1 hoặc bản cũ, không chèn reminder ở bước này.
+Nếu không resolve được card hiện tại, chỉ Global prompt được chèn.
 
-### Bước 2 — final-stage injection
+## Character binding
 
-Ở `CHAT_COMPLETION_PROMPT_READY`, khi mảng Chat Completion messages đã được dựng:
-
-1. Tìm các system message có content đúng bằng reminder và xóa bản trùng nếu có.
-2. Append đúng một `{ role: "system", content: reminder }` ở cuối mảng `chat`.
-3. Vì đây là bản duy nhất, Prompt Reviewer/Inspector chỉ nên thấy reminder **một lần**, ở cuối prompt.
-
-Nếu extension bị tắt hoặc textarea chỉ chứa whitespace, final chat array không được thêm reminder và legacy staged slot vẫn được clear.
+Binding ưu tiên avatar/card filename làm định danh ổn định và giữ tên card để hiển thị. Trong group chat, extension dùng character hiện SillyTavern đang expose qua context; nếu không resolve được người đang phản hồi thì an toàn quay về chỉ dùng Global prompt.
 
 ## Development tests
 
@@ -117,13 +165,14 @@ Auto-prompt/
 └─ LICENSE
 ```
 
-## Giới hạn V0.1.2
+## Giới hạn V0.2.0
 
-- Chỉ có một reminder global, chưa có cấu hình theo character/chat/preset.
 - Final-stage enforcement hiện nhắm vào **Chat Completion** qua `CHAT_COMPLETION_PROMPT_READY`.
-- Text Completion chưa có final-string injection riêng; v0.1.2 ưu tiên đúng luồng Chat Completion đã được test thực tế.
-- Chưa có UI xem raw final HTTP payload; Prompt Reviewer/Inspector + marker output vẫn là cách test chính.
-- Automated tests xác minh logic, clear legacy slot, settings contract và final-stage single-copy injection; vẫn cần test thật trên instance SillyTavern của bạn.
+- Text Completion chưa có final-string injection riêng.
+- Character binding chưa có selector duyệt toàn bộ thư viện card; v0.2.0 dùng nút **Gắn với card hiện tại**.
+- Group chat phụ thuộc character hiện SillyTavern expose trong context; nếu không resolve được thì chỉ Global prompt chạy.
+- Chưa có drag-and-drop; dùng nút lên/xuống.
+- Chưa có scheduling/frequency, regex trigger, per-generation filter hay nhiều mức priority.
 
 ## License
 
