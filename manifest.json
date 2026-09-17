@@ -1,0 +1,14 @@
+{
+  "display_name": "ST Auto Prompt Reminder",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "hoang truong",
+  "version": "0.1.0",
+  "auto_update": true,
+  "hooks": {
+    "disable": "onDisable"
+  }
+}
