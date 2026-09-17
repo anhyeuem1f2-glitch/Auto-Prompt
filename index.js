@@ -79,7 +79,7 @@ function createSettingsPanel(context, settings) {
 
                 <div id="${STATUS_ID}" class="st-auto-prompt-status" aria-live="polite"></div>
                 <small class="st-auto-prompt-hint">
-                    Nội dung được tự lưu. Extension chèn ở depth 0 để Prompt Reviewer nhìn thấy, sau đó đưa cùng system reminder xuống cuối prompt ngay trước khi gửi AI.
+                    Nội dung được tự lưu. Extension giữ slot injection cũ ở trạng thái rỗng và chỉ thêm một system reminder duy nhất ở cuối prompt ngay trước khi gửi AI.
                 </small>
             </div>
         </div>
@@ -147,9 +147,6 @@ async function init() {
     cleanupGenerationHook = registerGenerationHook(
         context,
         () => settings,
-        (info) => {
-            console.debug('[ST Auto Prompt Reminder] Staged reminder for generation.', info);
-        },
     );
 
     try {

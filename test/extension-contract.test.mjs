@@ -12,7 +12,8 @@ test('manifest loads the extension entry point and stylesheet', async () => {
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.1.1');
+    assert.equal(manifest.version, '0.1.2');
+    assert.equal(Object.hasOwn(manifest, 'author'), false);
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
 

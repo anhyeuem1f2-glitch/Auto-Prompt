@@ -37,7 +37,7 @@ function createContext() {
     };
 }
 
-test('applyReminderInjection sends exact text as depth-0 system in-chat extension prompt', async () => {
+test('applyReminderInjection clears the legacy staged prompt instead of injecting a duplicate copy', async () => {
     const context = createContext();
     const authored = 'Stay in character.\nUpdate the table.';
     const seen = [];
@@ -51,14 +51,14 @@ test('applyReminderInjection sends exact text as depth-0 system in-chat extensio
 
     assert.deepEqual(context.calls, [[
         PROMPT_KEY,
-        authored,
+        '',
         INJECTION_POSITION,
         INJECTION_DEPTH,
         false,
         INJECTION_ROLE,
     ]]);
-    assert.deepEqual(result, { active: true, textLength: authored.length });
-    assert.deepEqual(seen, [{ at: 123456789, textLength: authored.length }]);
+    assert.deepEqual(result, { active: true, textLength: authored.length, staged: false });
+    assert.deepEqual(seen, []);
 });
 
 test('applyReminderInjection actively clears a previous prompt when disabled', async () => {
@@ -73,11 +73,11 @@ test('applyReminderInjection actively clears a previous prompt when disabled', a
 
     assert.equal(context.calls.length, 1);
     assert.deepEqual(context.calls[0], [PROMPT_KEY, '', INJECTION_POSITION, INJECTION_DEPTH, false, INJECTION_ROLE]);
-    assert.deepEqual(result, { active: false, textLength: 0 });
+    assert.deepEqual(result, { active: false, textLength: 0, staged: false });
     assert.deepEqual(seen, []);
 });
 
-test('registerGenerationHook injects on every generation event', async () => {
+test('registerGenerationHook clears the legacy staged slot on every generation event', async () => {
     const context = createContext();
     let settings = { enabled: true, promptText: 'always inject this' };
     const seen = [];
@@ -97,9 +97,9 @@ test('registerGenerationHook injects on every generation event', async () => {
     await handler();
 
     assert.equal(context.calls.length, 2);
-    assert.equal(context.calls[0][1], 'always inject this');
-    assert.equal(context.calls[1][1], 'new text next turn');
-    assert.equal(seen.length, 2);
+    assert.equal(context.calls[0][1], '');
+    assert.equal(context.calls[1][1], '');
+    assert.equal(seen.length, 0);
 
     cleanup();
     assert.equal(context.handlers.has('generation_after_commands'), false);

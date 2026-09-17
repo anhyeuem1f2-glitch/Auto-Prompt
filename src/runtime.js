@@ -5,32 +5,32 @@ export const INJECTION_POSITION = 1;
 export const INJECTION_DEPTH = 0;
 export const INJECTION_ROLE = 0;
 
-export async function applyReminderInjection(context, settings, onInjected = () => {}, now = Date.now) {
+export async function applyReminderInjection(context, settings) {
     const text = getReminderText(settings);
 
+    // v0.1.1 staged the reminder through setExtensionPrompt and then appended a
+    // final system reminder at CHAT_COMPLETION_PROMPT_READY. In real prompts,
+    // the staged copy can already be merged into another prompt layer by the
+    // time the final event fires, so exact-message de-duplication cannot remove
+    // it. Keep this legacy slot empty and let the final-stage hook be the only
+    // source of the reminder.
     await context.setExtensionPrompt(
         PROMPT_KEY,
-        text,
+        '',
         INJECTION_POSITION,
         INJECTION_DEPTH,
         false,
         INJECTION_ROLE,
     );
 
-    if (text) {
-        onInjected({
-            at: now(),
-            textLength: text.length,
-        });
-    }
-
     return {
         active: Boolean(text),
         textLength: text.length,
+        staged: false,
     };
 }
 
-export function registerGenerationHook(context, settingsProvider, onInjected = () => {}, now = Date.now) {
+export function registerGenerationHook(context, settingsProvider) {
     const eventType = context.event_types.GENERATION_AFTER_COMMANDS ?? context.event_types.GENERATION_STARTED;
 
     if (!eventType) {
@@ -38,7 +38,7 @@ export function registerGenerationHook(context, settingsProvider, onInjected = (
     }
 
     const handler = async () => {
-        await applyReminderInjection(context, settingsProvider(), onInjected, now);
+        await applyReminderInjection(context, settingsProvider());
     };
 
     context.eventSource.on(eventType, handler);

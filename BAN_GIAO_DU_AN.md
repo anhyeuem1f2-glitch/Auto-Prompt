@@ -2,67 +2,48 @@
 
 ## Phiên bản
 
-`v0.1.1` — 2026-09-17
+`v0.1.2` — 2026-09-17
 
 ## Mục tiêu V1
 
-Một extension SillyTavern tối giản cho phép người dùng viết toàn bộ lời nhắc trong một textarea và tự động chèn nguyên văn nội dung đó vào mọi generation mà không cần lặp lại reminder trong message chat.
+Một extension SillyTavern tối giản cho phép người dùng viết toàn bộ lời nhắc trong một textarea và tự động chèn nguyên văn nội dung đó vào mỗi Chat Completion mà không cần lặp lại reminder trong message chat.
 
-## Thay đổi v0.1.1
+## Thay đổi v0.1.2
 
 ### Lý do sửa
 
-Test thực tế xác nhận reminder có trong Prompt Reviewer, nhưng một lệnh marker bắt buộc vẫn bị model bỏ qua. Prompt Reviewer cũng cho thấy sau reminder vẫn còn layer prompt khác, nên `in-chat depth 0 system` không bảo đảm reminder là message cuối cùng của final Chat Completion prompt.
+Test thật trên SillyTavern xác nhận v0.1.1 đã đưa reminder xuống cuối prompt và model làm theo marker, nhưng Prompt Reviewer cho thấy reminder xuất hiện **hai lần**: một bản staged cũ và một bản final ở cuối. Nguyên nhân là staged `setExtensionPrompt()` đã được merge vào layer prompt trước khi `CHAT_COMPLETION_PROMPT_READY` chạy, nên de-duplicate theo `eventData.chat` không thể xóa bản đã merge đó.
 
 ### Cách sửa
 
-- Vẫn dùng `setExtensionPrompt()` ở `in-chat / depth 0 / system` để reminder có mặt trong pipeline và dễ kiểm tra bằng Prompt Reviewer.
-- Thêm final-stage hook ở `CHAT_COMPLETION_PROMPT_READY`.
-- Khi final chat array sẵn sàng:
-  - tìm system message có content đúng bằng reminder;
-  - xóa bản trùng;
-  - di chuyển một bản duy nhất xuống cuối mảng messages;
-  - nếu staged copy không tồn tại thì append một system reminder mới ở cuối.
-- Status UI đổi thành `✓ Đã chèn ở cuối prompt gửi AI ...` khi final-stage hook chạy.
-- Khi disable extension, cả generation hook và final prompt hook đều được cleanup.
+- Không còn stage reminder bằng `setExtensionPrompt()`.
+- Key cũ `st_auto_prompt_reminder.main` luôn được ghi chuỗi rỗng để dọn staged prompt từ v0.1.1.
+- `CHAT_COMPLETION_PROMPT_READY` là nơi duy nhất chèn reminder thật.
+- Final hook de-duplicate system message trùng và append đúng một reminder ở cuối `chat`.
+- Bỏ field `author` khỏi `manifest.json` và bỏ tên cá nhân khỏi metadata/license hiển thị của project.
+- Bump version lên `0.1.2`.
 
 ## Tính năng hiện có
 
-- Một toggle bật/tắt extension reminder.
+- Một toggle bật/tắt.
 - Một textarea lớn, không chia category/reminder type.
 - Autosave vào `extensionSettings.st_auto_prompt_reminder`.
-- Injection bằng `setExtensionPrompt()` ở in-chat depth 0, role system.
-- Re-apply injection ở mỗi `GENERATION_AFTER_COMMANDS`, fallback `GENERATION_STARTED`.
-- Final Chat Completion reminder enforcement ở `CHAT_COMPLETION_PROMPT_READY`.
-- Khi tắt/để trống, prompt cũ được clear bằng injection rỗng.
+- Clear legacy staged slot ở mỗi generation.
+- Final Chat Completion injection ở `CHAT_COMPLETION_PROMPT_READY`.
+- Reminder được đặt thành system message cuối cùng.
 - Console log có prefix `[ST Auto Prompt Reminder]`.
 - Test Node không cần dependency ngoài.
 
 ## Kiểm thử tự động
-
-Lệnh:
 
 ```bash
 npm test
 npm run check
 ```
 
-Test bao phủ:
+Test bao phủ settings, clear staged slot, generation hook, final-stage de-duplicate/single-copy injection, disable behavior, manifest và entry-point wiring.
 
-- Khởi tạo/default settings.
-- Giữ nguyên prompt text do user viết.
-- Disabled/blank => clear injection.
-- Đúng prompt key/position/depth/role.
-- Generation hook gọi injection ở mọi lượt.
-- Fallback generation event.
-- Final-stage function di chuyển staged reminder xuống cuối.
-- Final-stage de-duplicate, không gửi nhiều bản reminder.
-- Nếu staged reminder bị thiếu, final-stage sẽ append system reminder cuối.
-- Disabled reminder không sửa final chat array.
-- `CHAT_COMPLETION_PROMPT_READY` hook registration + cleanup.
-- Manifest/entry-point wiring.
-
-## Test thật cần làm trên SillyTavern của người dùng
+## Test thật cần làm trên SillyTavern
 
 Dùng reminder:
 
@@ -74,19 +55,19 @@ Trong phần <story_driver>, bắt buộc thêm đúng một dòng:
 
 Kiểm tra:
 
-1. Prompt Reviewer vẫn thấy reminder.
-2. Status UI hiện `✓ Đã chèn ở cuối prompt gửi AI ...`.
-3. Output model có `[AutoPromptCheck]: EXTENSION_ACTIVE` trong `<story_driver>`.
-4. Nếu vẫn không có marker dù status final-stage đã hiện, khi đó lỗi còn lại là model/preset instruction conflict chứ không còn là reminder bị đặt trước layer prompt khác.
+1. Prompt Reviewer chỉ thấy reminder **một lần**.
+2. Bản đó nằm ở cuối prompt.
+3. Status UI hiện `✓ Đã chèn ở cuối prompt gửi AI ...`.
+4. Output model có `[AutoPromptCheck]: EXTENSION_ACTIVE` trong `<story_driver>`.
 
 ## Giới hạn đã biết
 
 - Một reminder global.
 - Không có per-character/per-chat/preset profile.
-- Final-stage enforcement mới áp dụng cho Chat Completion; Text Completion chưa có final-string rewrite.
+- Final-stage injection hiện áp dụng cho Chat Completion; Text Completion chưa có final-string injection riêng.
 - Không có raw final HTTP payload inspector riêng.
 
-## File cần ghi đè/push GitHub cho v0.1.1
+## File cần ghi đè/push GitHub cho v0.1.2
 
 ```text
 manifest.json
@@ -97,6 +78,7 @@ test/runtime.test.mjs
 test/extension-contract.test.mjs
 README.md
 BAN_GIAO_DU_AN.md
+LICENSE
 ```
 
 Các file khác không đổi.
