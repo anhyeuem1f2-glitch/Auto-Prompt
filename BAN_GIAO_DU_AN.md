@@ -158,3 +158,59 @@ docs/superpowers/plans/2026-09-17-multi-prompt-character-binding-implementation.
 ```
 
 `LICENSE` không đổi ở v0.2.0.
+
+---
+
+# Release v0.3.0 — Optional Card Event Memory
+
+## Mục tiêu
+
+Thêm Event Memory nhẹ theo card để một AI phụ tự ghi các sự kiện đã thực sự xảy ra, sau đó người dùng có thể chọn bơm toàn bộ nhật ký vào final system prompt nhằm giảm quên trong RP dài. Memory không tự bật.
+
+## Thay đổi chính
+
+- Schema root nâng từ 2 lên 3, giữ nguyên/migrate prompt v0.1.x/v0.2.0.
+- Thêm `src/memory-core.js`: storage theo card, narrative extraction, append-only log, prompt cho Memory AI, parse JSON, message signature.
+- Thêm `src/memory-api.js`: OpenAI-compatible Base URL/API key/model list/chat completions/test connection.
+- Thêm `src/memory-runtime.js`: hook `MESSAGE_RECEIVED`, chỉ xử lý assistant message, dedupe response lặp, lỗi được cô lập.
+- `src/runtime.js`: Auto Prompt + Event Log được merge thành đúng **một** system message cuối prompt.
+- UI thêm drawer `Bộ nhớ sự kiện theo Card`, mặc định card memory OFF.
+- Toggle auto-record và toggle inject Event Log độc lập.
+- Event Log editable thủ công, AI chỉ append.
+- Nút `Tải danh sách model`, dropdown model, `Kiểm tra kết nối`.
+- Memory AI được yêu cầu đọc toàn bộ Event Log hiện tại + chính văn mới và ghi sự kiện chi tiết, không dùng planning chưa xảy ra làm fact.
+
+## Verification
+
+- Unit/contract/runtime/API tests bao phủ migration, optional memory, full-log injection, narrative extraction, model loading, API request, dedupe, append-only, lỗi API và no-duplicate final system message.
+- `npm test`: 55/55 test pass trên source.
+- `npm run check`: pass trên source.
+- Sau khi đóng ZIP: giải nén sạch và chạy lại cả hai lệnh trên chính artifact.
+
+## Giới hạn đã biết
+
+- Provider OpenAI-compatible phải cho phép browser CORS vì request Memory AI hiện gọi trực tiếp từ frontend extension.
+- Không có RAG, vector DB, auto-prune hay auto-summary. Event Log được inject toàn bộ theo yêu cầu.
+- Nếu người dùng swipe/regenerate cùng một message thành nội dung khác, content signature khác sẽ cho phép AI ghi thêm entry mới thay vì tự sửa entry cũ. Vì auto-memory là append-only, người dùng có thể chỉnh Event Log thủ công nếu muốn loại bỏ sự kiện từ một swipe đã bỏ.
+
+## Các file release v0.3.0 cần push/ghi đè GitHub
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `style.css`
+- `src/reminder-core.js`
+- `src/runtime.js`
+- `src/memory-core.js`
+- `src/memory-api.js`
+- `src/memory-runtime.js`
+- `test/reminder-core.test.mjs`
+- `test/runtime.test.mjs`
+- `test/memory-core.test.mjs`
+- `test/memory-api.test.mjs`
+- `test/memory-runtime.test.mjs`
+- `test/extension-contract.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+- `docs/superpowers/specs/2026-09-18-optional-card-event-memory-design.md`
+- `docs/superpowers/plans/2026-09-18-optional-card-event-memory-implementation.md`

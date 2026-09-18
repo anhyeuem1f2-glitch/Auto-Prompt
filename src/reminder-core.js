@@ -1,5 +1,7 @@
+import { ensureMemorySettings } from './memory-core.js';
+
 export const MODULE_NAME = 'st_auto_prompt_reminder';
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -97,6 +99,7 @@ export function ensureSettings(extensionSettings, idFactory = defaultIdFactory) 
     }
 
     delete settings.promptText;
+    ensureMemorySettings(settings);
 
     return settings;
 }

@@ -177,3 +177,34 @@ Auto-prompt/
 ## License
 
 MIT.
+
+## v0.3.0 — Bộ nhớ sự kiện theo Card (optional)
+
+Bản này thêm một hệ thống **Event Memory nhẹ**, đúng mục đích nhắc AI chứ không biến extension thành knowledge graph/RAG.
+
+- Memory **mặc định tắt theo từng card**. Không có card nào tự bật.
+- `Bật AI tự ghi sự kiện cho card này`: sau mỗi AI response đã commit, extension gọi một Memory AI riêng để đọc chính văn mới + **toàn bộ Event Log hiện có** và chỉ append sự kiện mới.
+- `Bơm toàn bộ Nhật ký sự kiện vào prompt`: khi bật, toàn bộ Event Log của card hiện tại được ghép vào **cùng một system message cuối** với Auto Prompt reminders. Không retrieval, không cắt theo relevance.
+- Hai toggle độc lập: có thể dừng auto-record nhưng vẫn inject log cũ, hoặc record mà chưa inject.
+- Event Log là textarea riêng theo card và người dùng được sửa thủ công. AI phụ không rewrite/xóa log cũ.
+- Memory AI được nhắc bắt buộc ghi chi tiết: vị trí, ai có mặt, bối cảnh, diễn biến, cách hành động xảy ra, kết quả, tình huống/tâm trạng có bằng chứng, hậu quả và liên kết với sự kiện cũ khi có.
+- `<story_scene>` và `<parallel_line>` được ưu tiên làm chính văn canonical. Planning/reasoning như `<story_driver>`/`<think>` không được tính là sự kiện nếu chưa thực sự xảy ra trong chính văn.
+
+### Memory AI Provider
+
+Trong `Bộ nhớ sự kiện theo Card`:
+
+1. Điền `Base URL` của API OpenAI-compatible, ví dụ `https://example.com/v1`.
+2. Điền `API Key` nếu provider yêu cầu. Local API có thể để trống.
+3. Bấm **Tải danh sách model**. Extension gọi endpoint `/models` và đổ model vào dropdown.
+4. Chọn model trong dropdown.
+5. Bấm **Kiểm tra kết nối**.
+6. Sau đó mới bật auto-record cho card cần dùng.
+
+Nếu bạn nhập Base URL dạng `.../chat/completions`, extension tự chuẩn hóa về API root trước khi gọi `/models` và `/chat/completions`.
+
+### Lưu ý
+
+Memory API được gọi trực tiếp từ trình duyệt SillyTavern. Provider cần cho phép request từ trình duyệt/CORS; nếu provider chặn CORS thì model list/test/memory call sẽ báo lỗi nhưng không ảnh hưởng đến phản hồi chính của SillyTavern.
+
+Memory AI lỗi, trả JSON sai, hoặc mất mạng sẽ **không sửa chat history** và **không chặn AI chính**. Event Log chỉ thay đổi sau khi Memory AI trả dữ liệu hợp lệ.

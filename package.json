@@ -1,10 +1,10 @@
 {
   "name": "st-auto-prompt-reminder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check index.js && node --check src/reminder-core.js && node --check src/runtime.js"
+    "check": "node --check index.js && node --check src/reminder-core.js && node --check src/runtime.js && node --check src/memory-core.js && node --check src/memory-api.js && node --check src/memory-runtime.js"
   }
 }

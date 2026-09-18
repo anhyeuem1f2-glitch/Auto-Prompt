@@ -1,4 +1,5 @@
 import { mergeActivePrompts } from './reminder-core.js';
+import { getMemoryInjectionText } from './memory-core.js';
 
 export const PROMPT_KEY = 'st_auto_prompt_reminder.main';
 export const INJECTION_POSITION = 1;
@@ -45,9 +46,11 @@ export function registerGenerationHook(context, settingsProvider) {
  */
 export function finalizeReminderInChat(eventData, settings, activeCharacter = null) {
     const merged = mergeActivePrompts(settings, activeCharacter);
+    const memoryText = getMemoryInjectionText(settings, activeCharacter);
+    const aggregateText = [merged.text, memoryText].filter(Boolean).join('\n\n');
     const chat = eventData?.chat;
 
-    if (!merged.text || !Array.isArray(chat)) {
+    if (!aggregateText || !Array.isArray(chat)) {
         return {
             active: false,
             promptCount: 0,
@@ -60,18 +63,18 @@ export function finalizeReminderInChat(eventData, settings, activeCharacter = nu
 
     for (let index = chat.length - 1; index >= 0; index -= 1) {
         const message = chat[index];
-        if (message?.role === 'system' && message?.content === merged.text) {
+        if (message?.role === 'system' && message?.content === aggregateText) {
             existingMessage ??= message;
             chat.splice(index, 1);
         }
     }
 
-    chat.push(existingMessage ?? { role: 'system', content: merged.text });
+    chat.push(existingMessage ?? { role: 'system', content: aggregateText });
 
     return {
         active: true,
         promptCount: merged.promptCount,
-        textLength: merged.textLength,
+        textLength: aggregateText.length,
         movedExisting: Boolean(existingMessage),
     };
 }

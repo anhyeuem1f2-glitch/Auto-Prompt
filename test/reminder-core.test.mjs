@@ -30,17 +30,22 @@ function prompt(overrides = {}) {
     };
 }
 
-test('ensureSettings creates schema v2 defaults without replacing the settings container', () => {
+test('ensureSettings creates schema v3 defaults with optional memory without replacing the settings container', () => {
     const extensionSettings = {};
     const settings = ensureSettings(extensionSettings, idFactorySequence('unused'));
 
     assert.equal(MODULE_NAME, 'st_auto_prompt_reminder');
-    assert.equal(SCHEMA_VERSION, 2);
+    assert.equal(SCHEMA_VERSION, 3);
     assert.strictEqual(settings, extensionSettings[MODULE_NAME]);
     assert.deepEqual(settings, {
         enabled: true,
-        schemaVersion: 2,
+        schemaVersion: 3,
         prompts: [],
+        memory: {
+            schemaVersion: 1,
+            provider: { baseUrl: '', apiKey: '', model: '', models: [] },
+            cards: {},
+        },
     });
 });
 
@@ -56,7 +61,7 @@ test('ensureSettings migrates v0.1.2 promptText losslessly into one global promp
     const settings = ensureSettings(extensionSettings, idFactorySequence('legacy-id'));
 
     assert.equal(settings.enabled, false);
-    assert.equal(settings.schemaVersion, 2);
+    assert.equal(settings.schemaVersion, 3);
     assert.equal(Object.hasOwn(settings, 'promptText'), false);
     assert.deepEqual(settings.prompts, [{
         id: 'legacy-id',
@@ -69,7 +74,7 @@ test('ensureSettings migrates v0.1.2 promptText losslessly into one global promp
     }]);
 });
 
-test('ensureSettings migrates blank legacy promptText without creating an empty prompt', () => {
+test('ensureSettings migrates blank legacy promptText without creating an empty prompt and adds memory defaults', () => {
     const extensionSettings = {
         [MODULE_NAME]: {
             enabled: true,
@@ -81,8 +86,13 @@ test('ensureSettings migrates blank legacy promptText without creating an empty 
 
     assert.deepEqual(settings, {
         enabled: true,
-        schemaVersion: 2,
+        schemaVersion: 3,
         prompts: [],
+        memory: {
+            schemaVersion: 1,
+            provider: { baseUrl: '', apiKey: '', model: '', models: [] },
+            cards: {},
+        },
     });
 });
 

@@ -50,8 +50,34 @@ function p(id, content, order = 0, extra = {}) {
     };
 }
 
-function settings(prompts, enabled = true) {
-    return { enabled, schemaVersion: 2, prompts };
+function settings(prompts, enabled = true, memory = null) {
+    return {
+        enabled,
+        schemaVersion: 3,
+        prompts,
+        memory: memory ?? {
+            schemaVersion: 1,
+            provider: { baseUrl: '', apiKey: '', model: '', models: [] },
+            cards: {},
+        },
+    };
+}
+
+function memoryFor(character, eventLog, enabled = true, injectEnabled = true) {
+    return {
+        schemaVersion: 1,
+        provider: { baseUrl: '', apiKey: '', model: '', models: [] },
+        cards: {
+            [character.key]: {
+                character,
+                enabled,
+                injectEnabled,
+                eventLog,
+                processedSignatures: {},
+                updatedAt: 0,
+            },
+        },
+    };
 }
 
 test('applyReminderInjection always clears the legacy staged prompt', async () => {
@@ -198,6 +224,56 @@ test('finalizeReminderInChat with no active card injects globals only', () => {
 
     assert.deepEqual(eventData.chat.at(-1), { role: 'system', content: 'GLOBAL' });
     assert.equal(result.promptCount, 1);
+});
+
+
+
+test('finalizeReminderInChat combines Auto Prompt reminders and full card Event Log into one final system message', () => {
+    const alice = { key: 'avatar:Alice.png', avatar: 'Alice.png', name: 'Alice' };
+    const eventData = { chat: [{ role: 'user', content: 'hello' }] };
+    const promptSettings = settings(
+        [p('global', 'REMINDER', 0)],
+        true,
+        memoryFor(alice, 'Message ID: 4\nA met B at the eastern gate.'),
+    );
+
+    const result = runtime.finalizeReminderInChat(eventData, promptSettings, alice);
+
+    assert.equal(eventData.chat.filter((message) => message.role === 'system').length, 1);
+    assert.match(eventData.chat.at(-1).content, /^REMINDER\n\n\[CARD EVENT LOG/);
+    assert.match(eventData.chat.at(-1).content, /A met B at the eastern gate/);
+    assert.equal(result.active, true);
+    assert.equal(result.promptCount, 1);
+});
+
+test('finalizeReminderInChat can inject memory alone when normal Auto Prompt is disabled', () => {
+    const alice = { key: 'avatar:Alice.png', avatar: 'Alice.png', name: 'Alice' };
+    const eventData = { chat: [{ role: 'user', content: 'hello' }] };
+    const promptSettings = settings(
+        [p('global', 'DO NOT INJECT', 0)],
+        false,
+        memoryFor(alice, 'FULL CARD HISTORY'),
+    );
+
+    const result = runtime.finalizeReminderInChat(eventData, promptSettings, alice);
+
+    assert.equal(result.active, true);
+    assert.equal(result.promptCount, 0);
+    assert.match(eventData.chat.at(-1).content, /FULL CARD HISTORY/);
+    assert.doesNotMatch(eventData.chat.at(-1).content, /DO NOT INJECT/);
+});
+
+test('finalizeReminderInChat omits card memory when memory injection is off', () => {
+    const alice = { key: 'avatar:Alice.png', avatar: 'Alice.png', name: 'Alice' };
+    const eventData = { chat: [{ role: 'user', content: 'hello' }] };
+    const promptSettings = settings(
+        [p('global', 'REMINDER', 0)],
+        true,
+        memoryFor(alice, 'HIDDEN HISTORY', true, false),
+    );
+
+    runtime.finalizeReminderInChat(eventData, promptSettings, alice);
+    assert.equal(eventData.chat.at(-1).content, 'REMINDER');
 });
 
 test('finalizeReminderInChat leaves final prompt untouched when extension is disabled', () => {

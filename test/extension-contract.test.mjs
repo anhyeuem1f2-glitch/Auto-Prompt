@@ -6,13 +6,13 @@ async function read(path) {
     return readFile(new URL(path, import.meta.url), 'utf8');
 }
 
-test('manifest loads the extension entry point and stylesheet at v0.2.0', async () => {
+test('manifest loads the extension entry point and stylesheet at v0.3.0', async () => {
     const manifest = JSON.parse(await read('../manifest.json'));
 
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.2.0');
+    assert.equal(manifest.version, '0.3.0');
     assert.equal(Object.hasOwn(manifest, 'author'), false);
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
@@ -51,6 +51,32 @@ test('entry point supports per-prompt enable, edit, delete, and reorder actions'
     assert.match(source, /st-auto-prompt-down/);
 });
 
+test('entry point exposes optional per-card Event Memory controls and provider model loader', async () => {
+    const source = await read('../index.js');
+
+    assert.match(source, /st-auto-memory-enabled/);
+    assert.match(source, /st-auto-memory-inject/);
+    assert.match(source, /st-auto-memory-event-log/);
+    assert.match(source, /st-auto-memory-base-url/);
+    assert.match(source, /st-auto-memory-api-key/);
+    assert.match(source, /st-auto-memory-load-models/);
+    assert.match(source, /st-auto-memory-model/);
+    assert.match(source, /st-auto-memory-test-connection/);
+    assert.match(source, /st-auto-memory-status/);
+    assert.match(source, /Tải danh sách model/);
+    assert.match(source, /Nhật ký sự kiện/);
+});
+
+test('entry point wires post-response memory capture and provider actions', async () => {
+    const source = await read('../index.js');
+
+    assert.match(source, /registerMemoryCaptureHook/);
+    assert.match(source, /loadProviderModels/);
+    assert.match(source, /testProviderConnection/);
+    assert.match(source, /getOrCreateCardMemory/);
+    assert.match(source, /processReceivedAssistantMessage/);
+});
+
 test('entry point reports final aggregate prompt count and text length', async () => {
     const source = await read('../index.js');
 
@@ -59,8 +85,7 @@ test('entry point reports final aggregate prompt count and text length', async (
     assert.match(source, /textLength/);
 });
 
-test('legacy single textarea id is removed from v0.2.0 UI', async () => {
+test('legacy single textarea id remains removed', async () => {
     const source = await read('../index.js');
-
     assert.doesNotMatch(source, /st-auto-prompt-text(?:"|'|`)/);
 });

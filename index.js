@@ -5,6 +5,9 @@ import {
     resolveCharacterIdentity,
 } from './src/reminder-core.js';
 import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
+import { ensureMemorySettings, getOrCreateCardMemory, getMemoryInjectionText } from './src/memory-core.js';
+import { loadProviderModels, testProviderConnection } from './src/memory-api.js';
+import { processReceivedAssistantMessage, registerMemoryCaptureHook } from './src/memory-runtime.js';
 
 const ROOT_ID = 'st-auto-prompt-reminder-settings';
 const TOGGLE_ID = 'st-auto-prompt-enabled';
@@ -17,12 +20,25 @@ const SCOPE_ID = 'st-auto-prompt-scope';
 const CONTENT_ID = 'st-auto-prompt-content';
 const BIND_ID = 'st-auto-prompt-bind-current';
 const BINDING_ID = 'st-auto-prompt-character-binding';
+const MEMORY_ENABLED_ID = 'st-auto-memory-enabled';
+const MEMORY_INJECT_ID = 'st-auto-memory-inject';
+const MEMORY_EVENT_LOG_ID = 'st-auto-memory-event-log';
+const MEMORY_BASE_URL_ID = 'st-auto-memory-base-url';
+const MEMORY_API_KEY_ID = 'st-auto-memory-api-key';
+const MEMORY_LOAD_MODELS_ID = 'st-auto-memory-load-models';
+const MEMORY_MODEL_ID = 'st-auto-memory-model';
+const MEMORY_TEST_ID = 'st-auto-memory-test-connection';
+const MEMORY_STATUS_ID = 'st-auto-memory-status';
+const MEMORY_CARD_ID = 'st-auto-memory-card';
 
 let initialized = false;
 let cleanupGenerationHook = null;
 let cleanupFinalPromptHook = null;
+let cleanupMemoryHook = null;
+let cleanupCardRefreshHook = null;
 let lastInjectionInfo = null;
 let selectedPromptId = null;
+let lastMemoryStatus = null;
 
 function currentContext(fallback = null) {
     return globalThis.SillyTavern?.getContext?.() ?? fallback;
@@ -71,16 +87,28 @@ async function persist(context, settings) {
 }
 
 function getStatusText(context, settings) {
-    if (!settings.enabled) {
+    const character = activeCharacter(context);
+    const memoryText = getMemoryInjectionText(settings, character);
+
+    if (!settings.enabled && !memoryText) {
         return 'Tạm dừng — Auto Prompt hiện không được chèn.';
     }
 
     if (lastInjectionInfo?.finalStage) {
         const time = new Date(lastInjectionInfo.at).toLocaleTimeString();
+        if (memoryText && lastInjectionInfo.promptCount === 0) {
+            return `✓ Đã chèn bộ nhớ card ở cuối prompt gửi AI · ${lastInjectionInfo.textLength.toLocaleString()} ký tự · ${time}`;
+        }
+        if (memoryText) {
+            return `✓ Đã chèn ${lastInjectionInfo.promptCount} prompt + bộ nhớ card ở cuối prompt gửi AI · ${lastInjectionInfo.textLength.toLocaleString()} ký tự · ${time}`;
+        }
         return `✓ Đã chèn ${lastInjectionInfo.promptCount} prompt ở cuối prompt gửi AI · ${lastInjectionInfo.textLength.toLocaleString()} ký tự · ${time}`;
     }
 
-    const merged = mergeActivePrompts(settings, activeCharacter(context));
+    const merged = mergeActivePrompts(settings, character);
+    if (!merged.text && memoryText) {
+        return `Sẵn sàng — bộ nhớ card sẽ được chèn toàn bộ · ${memoryText.length.toLocaleString()} ký tự`;
+    }
     if (!merged.text) {
         return 'Đang chờ — chưa có prompt đang bật phù hợp với card hiện tại.';
     }
@@ -91,6 +119,194 @@ function getStatusText(context, settings) {
 function renderStatus(context, settings) {
     const status = document.getElementById(STATUS_ID);
     if (status) status.textContent = getStatusText(context, settings);
+}
+
+
+function setMemoryStatus(kind, message, cardKey = '') {
+    lastMemoryStatus = { kind, message, cardKey, at: Date.now() };
+}
+
+function getMemoryStatusText(context, settings) {
+    const character = activeCharacter(context);
+    if (!character) return 'Chưa xác định card hiện tại.';
+
+    const memory = ensureMemorySettings(settings);
+    const card = getOrCreateCardMemory(settings, character);
+
+    if (lastMemoryStatus && (!lastMemoryStatus.cardKey || lastMemoryStatus.cardKey === character.key)) {
+        return lastMemoryStatus.message;
+    }
+
+    if (!card.enabled) {
+        return 'Đang tắt — Memory của card này chỉ chạy khi bạn tự bật.';
+    }
+
+    if (!memory.provider.baseUrl.trim() || !memory.provider.model.trim()) {
+        return 'Đã bật Memory nhưng chưa cấu hình Base URL và model.';
+    }
+
+    if (card.injectEnabled && card.eventLog.trim()) {
+        return `Sẵn sàng — tự ghi sau mỗi phản hồi và bơm toàn bộ Nhật ký sự kiện (${card.eventLog.length.toLocaleString()} ký tự).`;
+    }
+
+    return 'Sẵn sàng — tự ghi sau mỗi phản hồi. Chưa bơm Nhật ký sự kiện vào prompt.';
+}
+
+function renderMemoryModelOptions(settings) {
+    const select = document.getElementById(MEMORY_MODEL_ID);
+    if (!select) return;
+
+    const memory = ensureMemorySettings(settings);
+    const provider = memory.provider;
+    const values = [...new Set([provider.model, ...provider.models].filter(Boolean))];
+    select.innerHTML = [
+        '<option value="">-- Chọn model --</option>',
+        ...values.map((model) => `<option value="${escapeHtml(model)}" ${model === provider.model ? 'selected' : ''}>${escapeHtml(model)}</option>`),
+    ].join('');
+}
+
+function renderMemoryPanel(context, settings) {
+    const character = activeCharacter(context);
+    const memory = ensureMemorySettings(settings);
+    const card = character ? getOrCreateCardMemory(settings, character) : null;
+
+    const cardLabel = document.getElementById(MEMORY_CARD_ID);
+    const enabled = document.getElementById(MEMORY_ENABLED_ID);
+    const inject = document.getElementById(MEMORY_INJECT_ID);
+    const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
+    const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
+    const apiKey = document.getElementById(MEMORY_API_KEY_ID);
+    const status = document.getElementById(MEMORY_STATUS_ID);
+
+    if (cardLabel) {
+        cardLabel.textContent = character
+            ? `Card hiện tại: ${character.name || character.key}`
+            : 'Card hiện tại: không xác định';
+    }
+
+    if (enabled) {
+        enabled.checked = Boolean(card?.enabled);
+        enabled.disabled = !card;
+    }
+
+    if (inject) {
+        inject.checked = Boolean(card?.injectEnabled);
+        inject.disabled = !card;
+    }
+
+    if (eventLog) {
+        if (document.activeElement !== eventLog) eventLog.value = card?.eventLog ?? '';
+        eventLog.disabled = !card;
+    }
+
+    if (baseUrl && document.activeElement !== baseUrl) baseUrl.value = memory.provider.baseUrl;
+    if (apiKey && document.activeElement !== apiKey) apiKey.value = memory.provider.apiKey;
+    renderMemoryModelOptions(settings);
+    if (status) status.textContent = getMemoryStatusText(context, settings);
+}
+
+function saveMemoryProviderFields(context, settings) {
+    const memory = ensureMemorySettings(settings);
+    const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
+    const apiKey = document.getElementById(MEMORY_API_KEY_ID);
+    const model = document.getElementById(MEMORY_MODEL_ID);
+
+    if (baseUrl) memory.provider.baseUrl = baseUrl.value;
+    if (apiKey) memory.provider.apiKey = apiKey.value;
+    if (model) memory.provider.model = model.value;
+    context.saveSettingsDebounced();
+}
+
+function bindMemoryControls(context, settings) {
+    const enabled = document.getElementById(MEMORY_ENABLED_ID);
+    const inject = document.getElementById(MEMORY_INJECT_ID);
+    const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
+    const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
+    const apiKey = document.getElementById(MEMORY_API_KEY_ID);
+    const model = document.getElementById(MEMORY_MODEL_ID);
+    const loadModels = document.getElementById(MEMORY_LOAD_MODELS_ID);
+    const testConnection = document.getElementById(MEMORY_TEST_ID);
+
+    enabled?.addEventListener('change', () => {
+        const character = activeCharacter(context);
+        if (!character) return;
+        const card = getOrCreateCardMemory(settings, character);
+        card.enabled = enabled.checked;
+        card.updatedAt = Date.now();
+        lastMemoryStatus = null;
+        context.saveSettingsDebounced();
+        renderMemoryPanel(context, settings);
+    });
+
+    inject?.addEventListener('change', () => {
+        const character = activeCharacter(context);
+        if (!character) return;
+        const card = getOrCreateCardMemory(settings, character);
+        card.injectEnabled = inject.checked;
+        card.updatedAt = Date.now();
+        lastMemoryStatus = null;
+        context.saveSettingsDebounced();
+        renderMemoryPanel(context, settings);
+        renderStatus(context, settings);
+    });
+
+    eventLog?.addEventListener('input', () => {
+        const character = activeCharacter(context);
+        if (!character) return;
+        const card = getOrCreateCardMemory(settings, character);
+        card.eventLog = eventLog.value;
+        card.updatedAt = Date.now();
+        context.saveSettingsDebounced();
+        renderStatus(context, settings);
+    });
+
+    for (const input of [baseUrl, apiKey]) {
+        input?.addEventListener('input', () => {
+            saveMemoryProviderFields(context, settings);
+            lastMemoryStatus = null;
+        });
+    }
+
+    model?.addEventListener('change', () => {
+        saveMemoryProviderFields(context, settings);
+        lastMemoryStatus = null;
+        renderMemoryPanel(context, settings);
+    });
+
+    loadModels?.addEventListener('click', async () => {
+        saveMemoryProviderFields(context, settings);
+        const memory = ensureMemorySettings(settings);
+        setMemoryStatus('working', 'Đang tải danh sách model...');
+        renderMemoryPanel(context, settings);
+        try {
+            const models = await loadProviderModels(memory.provider);
+            memory.provider.models = models;
+            if (!memory.provider.model || !models.includes(memory.provider.model)) {
+                memory.provider.model = models[0] ?? '';
+            }
+            context.saveSettingsDebounced();
+            setMemoryStatus('success', `✓ Đã tải ${models.length} model.`);
+        } catch (error) {
+            setMemoryStatus('error', `Lỗi tải model: ${error.message}`);
+            console.error('[ST Auto Prompt Reminder] Memory model loading failed.', error);
+        }
+        renderMemoryPanel(context, settings);
+    });
+
+    testConnection?.addEventListener('click', async () => {
+        saveMemoryProviderFields(context, settings);
+        const memory = ensureMemorySettings(settings);
+        setMemoryStatus('working', 'Đang kiểm tra kết nối Memory AI...');
+        renderMemoryPanel(context, settings);
+        try {
+            await testProviderConnection(memory.provider);
+            setMemoryStatus('success', `✓ Kết nối thành công với model ${memory.provider.model}.`);
+        } catch (error) {
+            setMemoryStatus('error', `Lỗi kết nối: ${error.message}`);
+            console.error('[ST Auto Prompt Reminder] Memory AI connection test failed.', error);
+        }
+        renderMemoryPanel(context, settings);
+    });
 }
 
 function scopeLabel(prompt) {
@@ -311,6 +527,7 @@ function createSettingsPanel(context, settings) {
         renderPromptList(context, settings);
         renderEditor(context, settings);
         renderStatus(context, settings);
+        renderMemoryPanel(context, settings);
         return true;
     }
 
@@ -332,7 +549,7 @@ function createSettingsPanel(context, settings) {
             <div class="inline-drawer-content st-auto-prompt-content">
                 <label class="st-auto-prompt-toggle" for="${TOGGLE_ID}">
                     <input id="${TOGGLE_ID}" type="checkbox">
-                    <span>Bật tự động chèn vào mọi lượt</span>
+                    <span>Bật tự động chèn các prompt nhắc nhở</span>
                 </label>
 
                 <div class="st-auto-prompt-toolbar">
@@ -349,9 +566,62 @@ function createSettingsPanel(context, settings) {
                 </small>
             </div>
         </div>
+
+        <div class="inline-drawer st-auto-memory-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Bộ nhớ sự kiện theo Card</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content st-auto-memory-content">
+                <div id="${MEMORY_CARD_ID}" class="st-auto-memory-card"></div>
+
+                <label class="st-auto-prompt-toggle" for="${MEMORY_ENABLED_ID}">
+                    <input id="${MEMORY_ENABLED_ID}" type="checkbox">
+                    <span>Bật AI tự ghi sự kiện cho card này</span>
+                </label>
+
+                <label class="st-auto-prompt-toggle" for="${MEMORY_INJECT_ID}">
+                    <input id="${MEMORY_INJECT_ID}" type="checkbox">
+                    <span>Bơm toàn bộ Nhật ký sự kiện vào prompt</span>
+                </label>
+
+                <div class="st-auto-memory-provider">
+                    <b>Memory AI Provider</b>
+                    <label class="st-auto-prompt-field" for="${MEMORY_BASE_URL_ID}">
+                        <span>Base URL (OpenAI-compatible)</span>
+                        <input id="${MEMORY_BASE_URL_ID}" class="text_pole" type="text" placeholder="https://example.com/v1">
+                    </label>
+                    <label class="st-auto-prompt-field" for="${MEMORY_API_KEY_ID}">
+                        <span>API Key</span>
+                        <input id="${MEMORY_API_KEY_ID}" class="text_pole" type="password" autocomplete="off" placeholder="Có thể để trống với local API">
+                    </label>
+                    <div class="st-auto-memory-provider-row">
+                        <button id="${MEMORY_LOAD_MODELS_ID}" type="button" class="menu_button">Tải danh sách model</button>
+                        <button id="${MEMORY_TEST_ID}" type="button" class="menu_button">Kiểm tra kết nối</button>
+                    </div>
+                    <label class="st-auto-prompt-field" for="${MEMORY_MODEL_ID}">
+                        <span>Model</span>
+                        <select id="${MEMORY_MODEL_ID}" class="text_pole">
+                            <option value="">-- Chọn model --</option>
+                        </select>
+                    </label>
+                </div>
+
+                <label class="st-auto-prompt-field" for="${MEMORY_EVENT_LOG_ID}">
+                    <span>Nhật ký sự kiện</span>
+                    <textarea id="${MEMORY_EVENT_LOG_ID}" class="text_pole st-auto-memory-event-log" rows="16" spellcheck="false" placeholder="AI phụ sẽ append các sự kiện chi tiết đã thực sự xảy ra ở đây. Bạn có thể sửa thủ công bất cứ lúc nào."></textarea>
+                </label>
+
+                <div id="${MEMORY_STATUS_ID}" class="st-auto-memory-status" aria-live="polite"></div>
+                <small class="st-auto-prompt-hint">
+                    Memory mặc định tắt theo từng card. Khi bật, AI phụ đọc chính văn mới + toàn bộ Nhật ký hiện có rồi chỉ append sự kiện mới. Nhật ký không bị tự cắt hoặc retrieval từng phần.
+                </small>
+            </div>
+        </div>
     `;
 
     host.appendChild(root);
+    bindMemoryControls(context, settings);
 
     const toggle = document.getElementById(TOGGLE_ID);
     const addButton = document.getElementById(ADD_ID);
@@ -383,6 +653,7 @@ function createSettingsPanel(context, settings) {
     renderPromptList(context, settings);
     renderEditor(context, settings);
     renderStatus(context, settings);
+    renderMemoryPanel(context, settings);
     return true;
 }
 
@@ -430,8 +701,46 @@ async function init() {
         console.error('[ST Auto Prompt Reminder] Final-stage prompt hook is unavailable; reminders cannot be injected safely.', error);
     }
 
+    try {
+        cleanupMemoryHook = registerMemoryCaptureHook(
+            context,
+            () => settings,
+            () => activeCharacter(context),
+            (payload) => processReceivedAssistantMessage(payload),
+            (result, payload) => {
+                const key = payload.character?.key ?? '';
+                if (result?.processed) {
+                    const suffix = result.appended
+                        ? `✓ Đã ghi sự kiện mới từ message #${payload.messageId}.`
+                        : `✓ Đã đọc message #${payload.messageId}; không có sự kiện mới cần ghi.`;
+                    setMemoryStatus('success', suffix, key);
+                } else if (result?.reason === 'error') {
+                    setMemoryStatus('error', `Lỗi Memory AI: ${result.error?.message ?? 'Không rõ lỗi'}`, key);
+                    console.error('[ST Auto Prompt Reminder] Memory AI processing failed.', result.error);
+                } else if (result?.reason === 'provider-not-configured') {
+                    setMemoryStatus('warning', 'Memory đang bật nhưng chưa cấu hình Base URL và model.', key);
+                }
+                renderMemoryPanel(context, settings);
+                renderStatus(context, settings);
+            },
+        );
+    } catch (error) {
+        console.error('[ST Auto Prompt Reminder] MESSAGE_RECEIVED memory hook is unavailable.', error);
+    }
+
+    const cardRefreshEvent = context.event_types?.CHAT_CHANGED ?? context.eventTypes?.CHAT_CHANGED;
+    if (cardRefreshEvent) {
+        const refresh = () => {
+            lastMemoryStatus = null;
+            renderMemoryPanel(context, settings);
+            renderStatus(context, settings);
+        };
+        context.eventSource.on(cardRefreshEvent, refresh);
+        cleanupCardRefreshHook = () => context.eventSource.removeListener(cardRefreshEvent, refresh);
+    }
+
     createSettingsPanel(context, settings);
-    console.log('[ST Auto Prompt Reminder] Loaded v0.2.0.');
+    console.log('[ST Auto Prompt Reminder] Loaded v0.3.0.');
 }
 
 export function onDisable() {
@@ -439,6 +748,10 @@ export function onDisable() {
     cleanupGenerationHook = null;
     cleanupFinalPromptHook?.();
     cleanupFinalPromptHook = null;
+    cleanupMemoryHook?.();
+    cleanupMemoryHook = null;
+    cleanupCardRefreshHook?.();
+    cleanupCardRefreshHook = null;
 
     const context = currentContext();
     if (context) {

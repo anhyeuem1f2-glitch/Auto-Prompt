@@ -173,3 +173,60 @@
         justify-content: flex-end;
     }
 }
+
+#st-auto-prompt-reminder-settings .st-auto-memory-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-card {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(127, 127, 127, 0.14);
+    font-weight: 600;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-provider {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.2));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-provider-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-provider-row .menu_button {
+    flex: 1 1 160px;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-event-log {
+    width: 100%;
+    min-height: 300px;
+    resize: vertical;
+    box-sizing: border-box;
+    line-height: 1.45;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-status {
+    min-height: 1.4em;
+    font-size: 0.92em;
+    opacity: 0.95;
+}
+
+#st-auto-prompt-reminder-settings #st-auto-memory-enabled,
+#st-auto-prompt-reminder-settings #st-auto-memory-inject {
+    appearance: auto !important;
+    -webkit-appearance: checkbox !important;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    flex: 0 0 auto;
+}
