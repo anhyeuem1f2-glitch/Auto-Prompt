@@ -1,5 +1,5 @@
 import { mergeActivePrompts } from './reminder-core.js';
-import { getMemoryInjectionText } from './memory-core.js';
+import { getCardMemory } from './memory-core.js';
 
 export const PROMPT_KEY = 'st_auto_prompt_reminder.main';
 export const INJECTION_POSITION = 1;
@@ -41,13 +41,13 @@ export function registerGenerationHook(context, settingsProvider) {
 }
 
 /**
- * Merge all active prompt entries and keep exactly one aggregate reminder as
- * the final system message in the finished Chat Completion prompt.
+ * Merge active Auto Prompt reminders with already-selected memory context and
+ * keep exactly one aggregate reminder as the final system message.
  */
-export function finalizeReminderInChat(eventData, settings, activeCharacter = null) {
+export function finalizeReminderInChat(eventData, settings, activeCharacter = null, memoryText = '') {
     const merged = mergeActivePrompts(settings, activeCharacter);
-    const memoryText = getMemoryInjectionText(settings, activeCharacter);
-    const aggregateText = [merged.text, memoryText].filter(Boolean).join('\n\n');
+    const selectedMemory = typeof memoryText === 'string' ? memoryText.trim() : '';
+    const aggregateText = [merged.text, selectedMemory].filter(Boolean).join('\n\n');
     const chat = eventData?.chat;
 
     if (!aggregateText || !Array.isArray(chat)) {
@@ -71,18 +71,32 @@ export function finalizeReminderInChat(eventData, settings, activeCharacter = nu
 
     chat.push(existingMessage ?? { role: 'system', content: aggregateText });
 
-    return {
+    const result = {
         active: true,
         promptCount: merged.promptCount,
         textLength: aggregateText.length,
         movedExisting: Boolean(existingMessage),
     };
+    if (selectedMemory) result.memoryTextLength = selectedMemory.length;
+    return result;
+}
+
+function latestRoleContent(chat, role) {
+    if (!Array.isArray(chat)) return '';
+    for (let index = chat.length - 1; index >= 0; index -= 1) {
+        const message = chat[index];
+        if (message?.role === role && typeof message.content === 'string') {
+            return message.content;
+        }
+    }
+    return '';
 }
 
 export function registerFinalPromptHook(
     context,
     settingsProvider,
     characterProvider = () => null,
+    memorySelector = async () => ({ mode: 'none', text: '', relevantIds: [], totalEvents: 0, consumeFullNext: false }),
     onInjected = () => {},
     now = Date.now,
 ) {
@@ -93,17 +107,57 @@ export function registerFinalPromptHook(
     }
 
     const handler = async (eventData) => {
+        const settings = settingsProvider();
+        const character = characterProvider(eventData);
+        const userPrompt = latestRoleContent(eventData?.chat, 'user');
+        const recentAssistant = latestRoleContent(eventData?.chat, 'assistant');
+
+        let memorySelection = {
+            mode: 'none',
+            text: '',
+            relevantIds: [],
+            totalEvents: 0,
+            consumeFullNext: false,
+        };
+
+        try {
+            memorySelection = await memorySelector({
+                settings,
+                character,
+                userPrompt,
+                recentAssistant,
+                eventData,
+            }) ?? memorySelection;
+        } catch (error) {
+            console.error('[ST Auto Prompt Reminder] Memory relevance selection failed.', error);
+        }
+
         const result = finalizeReminderInChat(
             eventData,
-            settingsProvider(),
-            characterProvider(eventData),
+            settings,
+            character,
+            memorySelection.text,
         );
+
+        if (result.active && memorySelection.consumeFullNext) {
+            const card = getCardMemory(settings, character);
+            if (card) {
+                card.fullInjectNext = false;
+                context.saveSettingsDebounced?.();
+            }
+        }
 
         if (result.active) {
             onInjected({
                 at: now(),
                 promptCount: result.promptCount,
                 textLength: result.textLength,
+                ...(memorySelection.text ? {
+                    memoryTextLength: result.memoryTextLength ?? memorySelection.text.length,
+                    memoryMode: memorySelection.mode ?? 'none',
+                    memoryRelevantIds: Array.isArray(memorySelection.relevantIds) ? memorySelection.relevantIds : [],
+                    memoryTotalEvents: Number(memorySelection.totalEvents) || 0,
+                } : {}),
                 finalStage: true,
                 movedExisting: result.movedExisting,
             });

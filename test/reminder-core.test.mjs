@@ -42,7 +42,7 @@ test('ensureSettings creates schema v3 defaults with optional memory without rep
         schemaVersion: 3,
         prompts: [],
         memory: {
-            schemaVersion: 1,
+            schemaVersion: 2,
             provider: { baseUrl: '', apiKey: '', model: '', models: [] },
             cards: {},
         },
@@ -89,7 +89,7 @@ test('ensureSettings migrates blank legacy promptText without creating an empty 
         schemaVersion: 3,
         prompts: [],
         memory: {
-            schemaVersion: 1,
+            schemaVersion: 2,
             provider: { baseUrl: '', apiKey: '', model: '', models: [] },
             cards: {},
         },

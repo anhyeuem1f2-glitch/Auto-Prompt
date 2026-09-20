@@ -6,6 +6,11 @@ import {
     parseMemoryModelResponse,
     appendEventText,
     createMessageSignature,
+    upsertEventIndexEntry,
+    buildSelectorMessages,
+    parseMemorySelectionResponse,
+    selectEventTextByIds,
+    buildMemoryContextText,
 } from './memory-core.js';
 import { requestMemoryUpdate as requestMemoryUpdateDefault } from './memory-api.js';
 
@@ -31,6 +36,17 @@ function providerConfigured(provider) {
     return Boolean(provider?.baseUrl?.trim?.() && provider?.model?.trim?.());
 }
 
+function emptySelection(reason = 'disabled', totalEvents = 0) {
+    return {
+        mode: 'none',
+        text: '',
+        relevantIds: [],
+        totalEvents,
+        reason,
+        consumeFullNext: false,
+    };
+}
+
 export async function processReceivedAssistantMessage({
     context,
     settings,
@@ -54,11 +70,12 @@ export async function processReceivedAssistantMessage({
         return { processed: false, reason: 'provider-not-configured' };
     }
 
-    const signature = createMessageSignature(messageId, message.mes);
-    if (card.processedSignatures?.[String(messageId)] === signature) {
+    const messageKey = String(messageId);
+    if (card.processedMessageIds?.[messageKey] === true) {
         return { processed: false, reason: 'duplicate' };
     }
 
+    const signature = createMessageSignature(messageId, message.mes);
     const canonicalNarrative = extractCanonicalNarrative(message.mes);
     const messages = buildMemoryMessages({
         character,
@@ -74,9 +91,11 @@ export async function processReceivedAssistantMessage({
 
         if (parsed.hasEvent) {
             card.eventLog = appendEventText(card.eventLog, parsed.eventText);
+            card.eventIndex = upsertEventIndexEntry(card.eventIndex, messageKey, parsed.index);
         }
 
-        card.processedSignatures[String(messageId)] = signature;
+        card.processedMessageIds[messageKey] = true;
+        card.processedSignatures[messageKey] = signature;
         card.updatedAt = now();
         context?.saveSettingsDebounced?.();
 
@@ -84,6 +103,7 @@ export async function processReceivedAssistantMessage({
             processed: true,
             appended: parsed.hasEvent,
             eventText: parsed.eventText,
+            index: parsed.index,
             signature,
         };
     } catch (error) {
@@ -93,6 +113,81 @@ export async function processReceivedAssistantMessage({
             error: error instanceof Error ? error : new Error(String(error)),
         };
     }
+}
+
+export async function selectRelevantMemoryForPrompt({
+    settings,
+    character,
+    userPrompt,
+    recentAssistant = '',
+    requestMemorySelection = requestMemoryUpdateDefault,
+}) {
+    const card = getCardMemory(settings, character);
+    if (!card?.eventLog?.trim()) return emptySelection('empty-log', 0);
+
+    const totalEvents = Array.isArray(card.eventIndex) ? card.eventIndex.length : 0;
+    const cardName = card.character?.name || character?.name || 'Current card';
+
+    if (card.fullInjectNext) {
+        return {
+            mode: 'full',
+            text: buildMemoryContextText(card.eventLog, cardName, 'full'),
+            relevantIds: Array.isArray(card.eventIndex)
+                ? card.eventIndex.map((entry) => String(entry.messageId))
+                : [],
+            totalEvents,
+            reason: 'manual-full',
+            consumeFullNext: true,
+        };
+    }
+
+    if (!card.autoRelevantEnabled) return emptySelection('auto-relevant-disabled', totalEvents);
+    if (!cleanPrompt(userPrompt)) return emptySelection('empty-user-prompt', totalEvents);
+
+    const memory = ensureMemorySettings(settings);
+    if (!providerConfigured(memory.provider)) {
+        return emptySelection('provider-not-configured', totalEvents);
+    }
+
+    const messages = buildSelectorMessages({
+        character,
+        userPrompt,
+        recentAssistant,
+        eventIndex: card.eventIndex,
+    });
+
+    try {
+        const content = await requestMemorySelection(memory.provider, messages);
+        const parsed = parseMemorySelectionResponse(content);
+        const validIds = new Set((card.eventIndex ?? []).map((entry) => String(entry.messageId)));
+        const relevantIds = parsed.relevantIds.filter((id) => validIds.has(String(id)));
+        const selectedText = selectEventTextByIds(card.eventLog, relevantIds);
+
+        if (!selectedText) {
+            return {
+                ...emptySelection(parsed.reason || 'unrelated', totalEvents),
+                relevantIds: [],
+            };
+        }
+
+        return {
+            mode: 'relevant',
+            text: buildMemoryContextText(selectedText, cardName, 'relevant'),
+            relevantIds,
+            totalEvents,
+            reason: parsed.reason,
+            consumeFullNext: false,
+        };
+    } catch (error) {
+        return {
+            ...emptySelection('error', totalEvents),
+            error: error instanceof Error ? error : new Error(String(error)),
+        };
+    }
+}
+
+function cleanPrompt(value) {
+    return typeof value === 'string' ? value.trim() : '';
 }
 
 export function registerMemoryCaptureHook(

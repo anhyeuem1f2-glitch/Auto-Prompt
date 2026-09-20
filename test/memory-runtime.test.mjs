@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     processReceivedAssistantMessage,
     registerMemoryCaptureHook,
+    selectRelevantMemoryForPrompt,
 } from '../src/memory-runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory } from '../src/memory-core.js';
 
@@ -55,7 +56,7 @@ test('processReceivedAssistantMessage sends full existing log plus canonical nar
         messageId: 0,
         requestMemoryUpdate: async (provider, messages) => {
             seen.push({ provider: structuredClone(provider), messages: structuredClone(messages) });
-            return '{"has_event":true,"event_text":"Message ID: 0\\nAt the eastern gate, A accepted the apology after returning there; this directly follows the distrust recorded at Message ID 4."}';
+            return '{"has_event":true,"event_text":"Message ID: 0\\nAt the eastern gate, A accepted the apology after returning there; this directly follows the distrust recorded at Message ID 4.","index":{"summary":"A accepted the apology at the eastern gate.","actors":["A"],"locations":["eastern gate"],"topics":["apology","trust"],"entities":[],"related_ids":["4"]}}';
         },
         now: () => 1234,
     });
@@ -69,10 +70,12 @@ test('processReceivedAssistantMessage sends full existing log plus canonical nar
     assert.match(seen[0].messages[1].content, /A returned to the eastern gate and accepted the apology/);
     assert.doesNotMatch(seen[0].messages[1].content.split('=== CANONICAL NARRATIVE THAT ACTUALLY OCCURRED ===')[1].split('=== END CANONICAL NARRATIVE ===')[0], /A will forgive User/);
     assert.equal(card.updatedAt, 1234);
+    assert.equal(card.eventIndex.at(-1).messageId, '0');
+    assert.deepEqual(card.eventIndex.at(-1).relatedIds, ['4']);
     assert.equal(context.saveSettingsDebouncedCalls, 1);
 });
 
-test('duplicate committed response signature is skipped without a second API call', async () => {
+test('same Message ID is skipped even if MESSAGE_RECEIVED fires again with changed content', async () => {
     const settings = makeSettings();
     const card = getOrCreateCardMemory(settings, alice);
     card.enabled = true;
@@ -87,6 +90,7 @@ test('duplicate committed response signature is skipped without a second API cal
     };
 
     await processReceivedAssistantMessage({ context, settings, character: alice, messageId: 0, requestMemoryUpdate: request });
+    context.chat[0].mes = '<story_scene>A sat down and then stood up.</story_scene>';
     const second = await processReceivedAssistantMessage({ context, settings, character: alice, messageId: 0, requestMemoryUpdate: request });
 
     assert.equal(calls, 1);
@@ -142,4 +146,87 @@ test('registerMemoryCaptureHook listens to MESSAGE_RECEIVED and can be cleaned u
 
     cleanup();
     assert.equal(handlers.has('message_received'), false);
+});
+
+
+test('selectRelevantMemoryForPrompt calls selector with hidden index and injects only selected full events', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.autoRelevantEnabled = true;
+    card.eventLog = [
+        'Message ID 4: A began distrusting User at the eastern gate after X.',
+        'Message ID 19: User fulfilled the promise to A at the same gate, partially restoring trust.',
+        'Message ID 30: B bought lunch in another city.',
+    ].join('\n\n');
+    card.eventIndex = [
+        { messageId: '4', summary: 'A began distrusting User.', actors: ['A', 'User'], locations: ['eastern gate'], topics: ['trust'], entities: [], relatedIds: [] },
+        { messageId: '19', summary: 'User fulfilled the promise to A.', actors: ['A', 'User'], locations: ['eastern gate'], topics: ['promise', 'trust'], entities: [], relatedIds: ['4'] },
+        { messageId: '30', summary: 'B bought lunch.', actors: ['B'], locations: ['other city'], topics: ['food'], entities: [], relatedIds: [] },
+    ];
+
+    const seen = [];
+    const result = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'Tôi hỏi A bây giờ cô ấy nghĩ gì về tôi.',
+        recentAssistant: 'A đang đứng trước cổng thành.',
+        requestMemorySelection: async (provider, messages) => {
+            seen.push(messages);
+            return '{"relevant_ids":["4","19"],"reason":"relationship chain"}';
+        },
+    });
+
+    assert.equal(result.mode, 'relevant');
+    assert.deepEqual(result.relevantIds, ['4', '19']);
+    assert.equal(result.totalEvents, 3);
+    assert.match(result.text, /Message ID 4/);
+    assert.match(result.text, /Message ID 19/);
+    assert.doesNotMatch(result.text, /Message ID 30/);
+    assert.match(result.text, /MEMORY_CONTEXT/);
+    assert.doesNotMatch(seen[0][1].content, /B bought lunch in another city/);
+    assert.match(seen[0][1].content, /summary=B bought lunch/);
+});
+
+test('selectRelevantMemoryForPrompt returns no injection when selector finds no relevant events', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.autoRelevantEnabled = true;
+    card.eventLog = 'Message ID 4: A met B at the gate.';
+    card.eventIndex = [{ messageId: '4', summary: 'A met B.', actors: ['A', 'B'], locations: ['gate'], topics: ['meeting'], entities: [], relatedIds: [] }];
+
+    const result = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'Tôi nhìn thời tiết hôm nay.',
+        requestMemorySelection: async () => '{"relevant_ids":[],"reason":"unrelated"}',
+    });
+
+    assert.equal(result.mode, 'none');
+    assert.equal(result.text, '');
+    assert.deepEqual(result.relevantIds, []);
+});
+
+test('one-shot full-memory override bypasses selector and returns complete Event Log', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.fullInjectNext = true;
+    card.eventLog = 'Message ID 4: EVENT A\n\nMessage ID 19: EVENT B';
+    card.eventIndex = [
+        { messageId: '4', summary: 'A', actors: [], locations: [], topics: [], entities: [], relatedIds: [] },
+        { messageId: '19', summary: 'B', actors: [], locations: [], topics: [], entities: [], relatedIds: [] },
+    ];
+
+    let calls = 0;
+    const result = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'anything',
+        requestMemorySelection: async () => { calls += 1; return '{}'; },
+    });
+
+    assert.equal(calls, 0);
+    assert.equal(result.mode, 'full');
+    assert.equal(result.consumeFullNext, true);
+    assert.match(result.text, /EVENT A/);
+    assert.match(result.text, /EVENT B/);
 });

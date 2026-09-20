@@ -222,11 +222,16 @@
 }
 
 #st-auto-prompt-reminder-settings #st-auto-memory-enabled,
-#st-auto-prompt-reminder-settings #st-auto-memory-inject {
+#st-auto-prompt-reminder-settings #st-auto-memory-auto-relevant {
     appearance: auto !important;
     -webkit-appearance: checkbox !important;
     width: 18px;
     height: 18px;
     margin: 0;
     flex: 0 0 auto;
+}
+
+#st-auto-prompt-reminder-settings .st-auto-memory-full-next {
+    width: 100%;
+    justify-content: center;
 }

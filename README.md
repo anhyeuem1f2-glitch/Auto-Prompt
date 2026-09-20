@@ -208,3 +208,37 @@ Nếu bạn nhập Base URL dạng `.../chat/completions`, extension tự chuẩ
 Memory API được gọi trực tiếp từ trình duyệt SillyTavern. Provider cần cho phép request từ trình duyệt/CORS; nếu provider chặn CORS thì model list/test/memory call sẽ báo lỗi nhưng không ảnh hưởng đến phản hồi chính của SillyTavern.
 
 Memory AI lỗi, trả JSON sai, hoặc mất mạng sẽ **không sửa chat history** và **không chặn AI chính**. Event Log chỉ thay đổi sau khi Memory AI trả dữ liệu hợp lệ.
+
+## v0.3.1 — Relevant Memory Selector
+
+v0.3.1 thay cơ chế “bơm toàn bộ Event Log mỗi lượt” của v0.3.0 bằng **Auto Relevant Memory** để tránh làm prompt chính phình vô hạn.
+
+- `Bật AI tự ghi sự kiện cho card này` vẫn giữ nguyên: Memory AI đọc chính văn mới + Event Log hiện có và append sự kiện chi tiết.
+- Mỗi event mới có thêm **hidden retrieval index** gồm summary ngắn, actor, location, topic, entity và `related_ids`. Index này chỉ dùng nội bộ để chọn ký ức; **không bao giờ được paste vào prompt của model chính**.
+- `Tự chọn ký ức liên quan và chèn khi cần`: trước generation, Memory AI selector chỉ đọc prompt hiện tại + context gần nhất + hidden index, sau đó trả về các Message ID thực sự cần thiết.
+- Nếu selector chọn event, extension mới lấy **full text** của các event đó và đặt vào `<MEMORY_CONTEXT>...</MEMORY_CONTEXT>` ở system message cuối.
+- `<MEMORY_CONTEXT>` có chỉ dẫn rõ: dùng ký ức chỉ khi liên quan, không ép sự kiện cũ vào chính văn, không coi ký ức cũ là việc vừa xảy ra, không nhắc hidden trigger/Message ID trong truyện.
+- Với quan hệ/lời hứa/xung đột kéo dài, selector được yêu cầu lấy **cả causal chain**, không chỉ event mới nhất.
+- Nếu không event nào liên quan, không chèn Memory và không tạo block rỗng.
+- Nút **Bơm toàn bộ ký ức vào lượt kế tiếp** là override một lần; sau khi full memory thực sự được inject, cờ tự tắt.
+- Message ID đã xử lý sẽ không được Memory recorder append lần hai dù `MESSAGE_RECEIVED` phát lại với nội dung thay đổi, tránh hiện tượng `Message ID 24` bị ghi trùng.
+- Dữ liệu v0.3.0 tự migrate: toggle inject cũ được chuyển thành `Auto Relevant` thay vì tiếp tục full-dump mỗi lượt. Event Log cũ được giữ nguyên; extension tạo fallback hidden index từ các block `Message ID` đã có.
+
+### Luồng v0.3.1
+
+```text
+AI chính trả lời
+    ↓
+Memory recorder append Event Log + hidden index
+    ↓
+User gửi prompt mới
+    ↓
+Memory selector đọc prompt + context gần nhất + hidden index
+    ↓
+0 event liên quan → không inject Memory
+N event liên quan → inject full text đúng N event
+    ↓
+Auto Prompt + MEMORY_CONTEXT → một system message cuối
+```
+
+Lưu ý: Memory recorder vẫn đọc toàn bộ Event Log để liên kết sự kiện dài hạn chính xác. Tối ưu v0.3.1 tập trung vào **context của model chính**, không cắt ngắn dữ liệu recorder dùng để hiểu lịch sử.

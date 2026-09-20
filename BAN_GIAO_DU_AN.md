@@ -214,3 +214,73 @@ Thêm Event Memory nhẹ theo card để một AI phụ tự ghi các sự kiệ
 - `BAN_GIAO_DU_AN.md`
 - `docs/superpowers/specs/2026-09-18-optional-card-event-memory-design.md`
 - `docs/superpowers/plans/2026-09-18-optional-card-event-memory-implementation.md`
+
+---
+
+# Release v0.3.1 — Relevant Memory Selector
+
+## Mục tiêu
+
+Giữ Event Memory chính xác nhưng không paste toàn bộ Event Log vào model chính ở mọi lượt. Memory chỉ được inject khi liên quan tới prompt hiện tại; hidden trigger/index không xuất hiện trong prompt model chính.
+
+## Root cause của lỗi/token issue
+
+- v0.3.0 dùng `injectEnabled`, nên khi bật thì `getMemoryInjectionText()` trả toàn bộ Event Log ở mọi generation.
+- Cách đó đúng với “full memory” nhưng sai mục tiêu ban đầu là “ghi sẵn rồi gọi khi cần”. Event Log càng dài thì context model chính càng tăng tuyến tính.
+- Duplicate `Message ID 24` xuất hiện vì dedupe v0.3.0 dùng `messageId + content signature`; nếu cùng ID được event host phát lại với content khác, signature đổi và recorder gọi lần hai.
+
+## Thay đổi chính
+
+- Memory schema nâng `1 → 2`.
+- Thay `injectEnabled` bằng:
+  - `autoRelevantEnabled`: selector tự chọn event liên quan.
+  - `fullInjectNext`: override full-memory một lần.
+- Thêm hidden `eventIndex[]` theo Message ID, lưu summary/actors/locations/topics/entities/relatedIds.
+- Recorder trả thêm index trong cùng một API call, không cần call thứ hai để index event mới.
+- Event Log cũ được parse thành fallback index khi migrate; nội dung log không bị xóa.
+- Thêm `buildSelectorMessages()` + `parseMemorySelectionResponse()` + `selectEventTextByIds()`.
+- Selector chỉ nhận prompt hiện tại, recent assistant context và hidden index; không nhận raw full Event Log.
+- Model chính chỉ nhận `<MEMORY_CONTEXT>` chứa full text của event được selector chọn.
+- Memory block có hướng dẫn rõ “chỉ dùng khi liên quan / không force vào chính văn / không coi là sự kiện vừa xảy ra / không nhắc retrieval hay IDs”.
+- Relationship/promise/conflict dài hạn yêu cầu selector trả cả causal chain cần thiết.
+- Manual `Bơm toàn bộ ký ức vào lượt kế tiếp` bypass selector; cờ được consume sau khi inject thành công.
+- Dedupe recorder đổi sang Message ID tuyệt đối: cùng Message ID chỉ được xử lý một lần trong Event Log.
+- Status UI hiển thị số event selector chọn trên tổng số event và số ký tự Memory thực sự inject.
+
+## Migration v0.3.0 → v0.3.1
+
+- `injectEnabled=true` → `autoRelevantEnabled=true`.
+- `injectEnabled=false` → `autoRelevantEnabled=false`.
+- `fullInjectNext=false` mặc định.
+- `processedMessageIds` được seed từ key của `processedSignatures` cũ để không ghi lại các message đã từng xử lý.
+- Event Log cũ giữ nguyên byte text; hidden index fallback được sinh từ các block `Message ID`.
+
+## Verification cần giữ
+
+- Auto Relevant không paste toàn bộ Event Log.
+- Hidden index không xuất hiện trong final prompt.
+- Selector trả rỗng => 0 Memory được inject.
+- Selector trả IDs => chỉ full event text của IDs đó được inject.
+- Duplicate Message ID không gọi recorder API lần hai, kể cả content thay đổi.
+- Manual full-next bypass selector và tự tắt sau khi inject.
+- Auto Prompt + selected Memory vẫn là đúng một system message cuối.
+- Full regression suite và syntax check phải xanh trước khi đóng release.
+
+## Các file release v0.3.1 cần push/ghi đè GitHub
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `style.css`
+- `src/runtime.js`
+- `src/memory-core.js`
+- `src/memory-runtime.js`
+- `test/reminder-core.test.mjs`
+- `test/runtime.test.mjs`
+- `test/memory-core.test.mjs`
+- `test/memory-runtime.test.mjs`
+- `test/extension-contract.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+`src/reminder-core.js`, `src/memory-api.js` và `LICENSE` không đổi ở v0.3.1.
