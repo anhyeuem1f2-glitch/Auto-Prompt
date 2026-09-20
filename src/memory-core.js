@@ -1,4 +1,4 @@
-export const MEMORY_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 3;
 
 const DEFAULT_PROVIDER = Object.freeze({
     baseUrl: '',
@@ -147,6 +147,25 @@ export function upsertEventIndexEntry(index, messageId, payload) {
     return result;
 }
 
+
+function normalizeFailedMessages(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const result = {};
+    for (const [key, raw] of Object.entries(value)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const messageId = cleanString(String(raw.messageId ?? key ?? '')).trim();
+        if (!messageId) continue;
+        result[messageId] = {
+            messageId,
+            attempts: Number.isFinite(Number(raw.attempts)) ? Number(raw.attempts) : 0,
+            lastError: cleanString(raw.lastError),
+            failedAt: Number.isFinite(Number(raw.failedAt)) ? Number(raw.failedAt) : 0,
+            messageText: cleanString(raw.messageText),
+        };
+    }
+    return result;
+}
+
 function normalizeCardMemory(card, character = null) {
     const source = card && typeof card === 'object' ? card : {};
     const normalizedCharacter = normalizeCharacter(character)
@@ -168,6 +187,7 @@ function normalizeCardMemory(card, character = null) {
     ];
     const autoRelevantEnabled = source.autoRelevantEnabled === true
         || (source.autoRelevantEnabled === undefined && source.injectEnabled === true);
+    const failedMessages = normalizeFailedMessages(source.failedMessages);
 
     return {
         character: normalizedCharacter,
@@ -178,6 +198,7 @@ function normalizeCardMemory(card, character = null) {
         eventIndex,
         processedMessageIds,
         processedSignatures,
+        failedMessages,
         updatedAt: Number.isFinite(Number(source.updatedAt)) ? Number(source.updatedAt) : 0,
     };
 }
@@ -220,6 +241,7 @@ export function ensureMemorySettings(settings) {
         card.eventIndex = normalized.eventIndex;
         card.processedMessageIds = normalized.processedMessageIds;
         card.processedSignatures = normalized.processedSignatures;
+        card.failedMessages = normalized.failedMessages;
         card.updatedAt = normalized.updatedAt;
         delete card.injectEnabled;
         memory.cards[key] = card;

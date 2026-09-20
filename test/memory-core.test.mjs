@@ -26,10 +26,10 @@ test('ensureMemorySettings creates optional memory defaults with recording off',
     const root = {};
     const memory = ensureMemorySettings(root);
 
-    assert.equal(MEMORY_SCHEMA_VERSION, 2);
+    assert.equal(MEMORY_SCHEMA_VERSION, 3);
     assert.strictEqual(memory, root.memory);
     assert.deepEqual(memory, {
-        schemaVersion: 2,
+        schemaVersion: 3,
         provider: {
             baseUrl: '',
             apiKey: '',
@@ -55,6 +55,7 @@ test('getOrCreateCardMemory creates card-scoped memory disabled by default', () 
         eventIndex: [],
         processedMessageIds: {},
         processedSignatures: {},
+        failedMessages: {},
         updatedAt: 0,
     });
     assert.strictEqual(getCardMemory(root, alice), card);
@@ -190,7 +191,7 @@ test('ensureMemorySettings migrates legacy full-injection toggle into auto relev
     const memory = ensureMemorySettings(root);
     const card = memory.cards[alice.key];
 
-    assert.equal(memory.schemaVersion, 2);
+    assert.equal(memory.schemaVersion, 3);
     assert.equal(card.autoRelevantEnabled, true);
     assert.equal(card.fullInjectNext, false);
     assert.equal(card.injectEnabled, undefined);
@@ -259,4 +260,33 @@ test('buildMemoryContextText explains how selected memories should be used inste
     assert.match(text, /only when relevant/i);
     assert.match(text, /do not force/i);
     assert.match(text, /Message ID 19/);
+});
+
+
+test('ensureMemorySettings preserves a persistent per-card failed Memory queue', () => {
+    const root = {
+        memory: {
+            schemaVersion: 2,
+            provider: { baseUrl: 'https://example.com/v1', apiKey: '', model: 'memory-model', models: [] },
+            cards: {
+                [alice.key]: {
+                    character: alice,
+                    enabled: true,
+                    eventLog: '',
+                    eventIndex: [],
+                    processedMessageIds: {},
+                    processedSignatures: {},
+                    failedMessages: {
+                        '24': { messageId: '24', attempts: 6, lastError: 'network down', failedAt: 1234, messageText: '<story_scene>Saved response.</story_scene>' },
+                    },
+                },
+            },
+        },
+    };
+
+    const memory = ensureMemorySettings(root);
+    assert.equal(memory.schemaVersion, 3);
+    assert.deepEqual(memory.cards[alice.key].failedMessages, {
+        '24': { messageId: '24', attempts: 6, lastError: 'network down', failedAt: 1234, messageText: '<story_scene>Saved response.</story_scene>' },
+    });
 });

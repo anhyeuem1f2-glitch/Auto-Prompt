@@ -14,6 +14,13 @@ import {
 } from './memory-core.js';
 import { requestMemoryUpdate as requestMemoryUpdateDefault } from './memory-api.js';
 
+const DEFAULT_RETRY_COUNT = 5;
+const DEFAULT_RETRY_DELAY_MS = 20_000;
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function resolveMessage(context, messageId) {
     if (!Array.isArray(context?.chat)) return null;
     const numericId = Number(messageId);
@@ -52,10 +59,17 @@ export async function processReceivedAssistantMessage({
     settings,
     character,
     messageId,
+    messageOverride = null,
     requestMemoryUpdate = requestMemoryUpdateDefault,
     now = Date.now,
+    wait = sleep,
+    maxRetries = DEFAULT_RETRY_COUNT,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    onRetry = () => {},
 }) {
-    const message = resolveMessage(context, messageId);
+    const message = typeof messageOverride === 'string'
+        ? { is_user: false, is_system: false, mes: messageOverride }
+        : resolveMessage(context, messageId);
     if (!isAssistantMessage(message)) {
         return { processed: false, reason: 'not-assistant' };
     }
@@ -85,34 +99,98 @@ export async function processReceivedAssistantMessage({
         eventLog: card.eventLog,
     });
 
-    try {
-        const content = await requestMemoryUpdate(memory.provider, messages);
-        const parsed = parseMemoryModelResponse(content);
+    let attempts = 0;
+    let lastError = null;
+    while (attempts <= maxRetries) {
+        attempts += 1;
+        try {
+            const content = await requestMemoryUpdate(memory.provider, messages);
+            const parsed = parseMemoryModelResponse(content);
 
-        if (parsed.hasEvent) {
-            card.eventLog = appendEventText(card.eventLog, parsed.eventText);
-            card.eventIndex = upsertEventIndexEntry(card.eventIndex, messageKey, parsed.index);
+            if (parsed.hasEvent) {
+                card.eventLog = appendEventText(card.eventLog, parsed.eventText);
+                card.eventIndex = upsertEventIndexEntry(card.eventIndex, messageKey, parsed.index);
+            }
+
+            card.processedMessageIds[messageKey] = true;
+            card.processedSignatures[messageKey] = signature;
+            if (card.failedMessages) delete card.failedMessages[messageKey];
+            card.updatedAt = now();
+            context?.saveSettingsDebounced?.();
+
+            return {
+                processed: true,
+                appended: parsed.hasEvent,
+                eventText: parsed.eventText,
+                index: parsed.index,
+                signature,
+                attempts,
+            };
+        } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (attempts > maxRetries) break;
+            const retryNumber = attempts;
+            onRetry({
+                messageId: messageKey,
+                retryNumber,
+                maxRetries,
+                retryDelayMs,
+                error: lastError,
+            });
+            await wait(retryDelayMs);
         }
-
-        card.processedMessageIds[messageKey] = true;
-        card.processedSignatures[messageKey] = signature;
-        card.updatedAt = now();
-        context?.saveSettingsDebounced?.();
-
-        return {
-            processed: true,
-            appended: parsed.hasEvent,
-            eventText: parsed.eventText,
-            index: parsed.index,
-            signature,
-        };
-    } catch (error) {
-        return {
-            processed: false,
-            reason: 'error',
-            error: error instanceof Error ? error : new Error(String(error)),
-        };
     }
+
+    card.failedMessages ??= {};
+    card.failedMessages[messageKey] = {
+        messageId: messageKey,
+        attempts,
+        lastError: lastError?.message ?? 'Unknown Memory AI error',
+        failedAt: now(),
+        messageText: message.mes,
+    };
+    card.updatedAt = now();
+    context?.saveSettingsDebounced?.();
+
+    return {
+        processed: false,
+        reason: 'retry-exhausted',
+        error: lastError ?? new Error('Memory AI retry exhausted.'),
+        attempts,
+    };
+}
+
+export async function recallFailedMemoryMessages({
+    context,
+    settings,
+    character,
+    processor = processReceivedAssistantMessage,
+    onProgress = () => {},
+}) {
+    const card = getCardMemory(settings, character);
+    const queuedIds = Object.keys(card?.failedMessages ?? {});
+    let recovered = 0;
+
+    for (const messageId of queuedIds) {
+        onProgress({ type: 'recall-start', messageId, total: queuedIds.length, recovered });
+        const failedEntry = card.failedMessages?.[messageId];
+        const result = await processor({
+            context,
+            settings,
+            character,
+            messageId,
+            messageOverride: failedEntry?.messageText || null,
+            onRetry: (retry) => onProgress({ type: 'retry', ...retry }),
+        });
+        if (result?.processed) recovered += 1;
+        onProgress({ type: 'recall-result', messageId, result, total: queuedIds.length, recovered });
+    }
+
+    return {
+        total: queuedIds.length,
+        recovered,
+        remainingIds: Object.keys(card?.failedMessages ?? {}),
+    };
 }
 
 export async function selectRelevantMemoryForPrompt({
@@ -196,6 +274,7 @@ export function registerMemoryCaptureHook(
     characterProvider,
     processor = processReceivedAssistantMessage,
     onResult = () => {},
+    onProgress = () => {},
 ) {
     const eventType = context?.event_types?.MESSAGE_RECEIVED ?? context?.eventTypes?.MESSAGE_RECEIVED;
     if (!eventType) {
@@ -211,7 +290,10 @@ export function registerMemoryCaptureHook(
             messageId,
         };
 
-        const job = queue.then(() => processor(payload));
+        const job = queue.then(() => processor({
+            ...payload,
+            onRetry: (retry) => onProgress(retry, payload),
+        }));
         queue = job.catch(() => {});
         const result = await job;
         onResult(result, payload);

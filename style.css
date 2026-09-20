@@ -235,3 +235,8 @@
     width: 100%;
     justify-content: center;
 }
+
+#st-auto-prompt-reminder-settings .st-auto-memory-recall-failed {
+    width: 100%;
+    justify-content: center;
+}

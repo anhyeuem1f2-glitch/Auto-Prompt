@@ -7,7 +7,7 @@ import {
 import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory, toggleFullInjectNext } from './src/memory-core.js';
 import { loadProviderModels, testProviderConnection } from './src/memory-api.js';
-import { processReceivedAssistantMessage, registerMemoryCaptureHook, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
+import { processReceivedAssistantMessage, recallFailedMemoryMessages, registerMemoryCaptureHook, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
 
 const ROOT_ID = 'st-auto-prompt-reminder-settings';
 const TOGGLE_ID = 'st-auto-prompt-enabled';
@@ -23,6 +23,7 @@ const BINDING_ID = 'st-auto-prompt-character-binding';
 const MEMORY_ENABLED_ID = 'st-auto-memory-enabled';
 const MEMORY_AUTO_RELEVANT_ID = 'st-auto-memory-auto-relevant';
 const MEMORY_FULL_NEXT_ID = 'st-auto-memory-full-next';
+const MEMORY_RECALL_FAILED_ID = 'st-auto-memory-recall-failed';
 const MEMORY_EVENT_LOG_ID = 'st-auto-memory-event-log';
 const MEMORY_BASE_URL_ID = 'st-auto-memory-base-url';
 const MEMORY_API_KEY_ID = 'st-auto-memory-api-key';
@@ -140,6 +141,10 @@ function getMemoryStatusText(context, settings) {
     }
 
     const recording = card.enabled ? 'Ghi sự kiện: BẬT' : 'Ghi sự kiện: TẮT';
+    const failedCount = Object.keys(card.failedMessages ?? {}).length;
+    if (failedCount > 0) {
+        return `${recording} · ⚠ ${failedCount} message chưa được ghi vào Memory. Có thể Recall bằng tay.`;
+    }
     if (card.fullInjectNext && card.eventLog.trim()) {
         return `${recording} · Đã xếp TOÀN BỘ Memory cho lượt kế tiếp.`;
     }
@@ -174,6 +179,7 @@ function renderMemoryPanel(context, settings) {
     const enabled = document.getElementById(MEMORY_ENABLED_ID);
     const autoRelevant = document.getElementById(MEMORY_AUTO_RELEVANT_ID);
     const fullNext = document.getElementById(MEMORY_FULL_NEXT_ID);
+    const recallFailed = document.getElementById(MEMORY_RECALL_FAILED_ID);
     const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
     const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
     const apiKey = document.getElementById(MEMORY_API_KEY_ID);
@@ -203,6 +209,14 @@ function renderMemoryPanel(context, settings) {
         fullNext.classList.toggle('st-auto-memory-full-next-active', Boolean(card?.fullInjectNext));
     }
 
+    if (recallFailed) {
+        const failedCount = Object.keys(card?.failedMessages ?? {}).length;
+        recallFailed.disabled = !card || failedCount === 0;
+        recallFailed.textContent = failedCount > 0
+            ? `Recall ký ức lỗi (${failedCount})`
+            : 'Recall ký ức lỗi';
+    }
+
     if (eventLog) {
         if (document.activeElement !== eventLog) eventLog.value = card?.eventLog ?? '';
         eventLog.disabled = !card;
@@ -230,6 +244,7 @@ function bindMemoryControls(context, settings) {
     const enabled = document.getElementById(MEMORY_ENABLED_ID);
     const autoRelevant = document.getElementById(MEMORY_AUTO_RELEVANT_ID);
     const fullNext = document.getElementById(MEMORY_FULL_NEXT_ID);
+    const recallFailed = document.getElementById(MEMORY_RECALL_FAILED_ID);
     const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
     const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
     const apiKey = document.getElementById(MEMORY_API_KEY_ID);
@@ -279,6 +294,52 @@ function bindMemoryControls(context, settings) {
             character.key,
         );
         context.saveSettingsDebounced();
+        renderMemoryPanel(context, settings);
+        renderStatus(context, settings);
+    });
+
+    recallFailed?.addEventListener('click', async () => {
+        const character = activeCharacter(context);
+        if (!character) return;
+        const card = getOrCreateCardMemory(settings, character);
+        const failedCount = Object.keys(card.failedMessages ?? {}).length;
+        if (failedCount === 0) {
+            setMemoryStatus('info', 'Không có message Memory lỗi nào cần Recall.', character.key);
+            renderMemoryPanel(context, settings);
+            return;
+        }
+
+        recallFailed.disabled = true;
+        setMemoryStatus('working', `Đang Recall ${failedCount} message Memory lỗi...`, character.key);
+        renderMemoryPanel(context, settings);
+
+        const result = await recallFailedMemoryMessages({
+            context,
+            settings,
+            character,
+            onProgress: (info) => {
+                if (info.type === 'retry') {
+                    setMemoryStatus(
+                        'working',
+                        `Message #${info.messageId} vẫn lỗi · tự thử lại ${info.retryNumber}/${info.maxRetries} sau ${Math.round(info.retryDelayMs / 1000)} giây.`,
+                        character.key,
+                    );
+                } else if (info.type === 'recall-start') {
+                    setMemoryStatus('working', `Đang Recall message #${info.messageId}...`, character.key);
+                }
+                renderMemoryPanel(context, settings);
+            },
+        });
+
+        if (result.remainingIds.length === 0) {
+            setMemoryStatus('success', `✓ Recall thành công ${result.recovered}/${result.total} message. Không còn ký ức lỗi.`, character.key);
+        } else {
+            setMemoryStatus(
+                'error',
+                `⚠ Recall được ${result.recovered}/${result.total}; còn lỗi: #${result.remainingIds.join(', #')}. Có thể bấm Recall lại sau.`,
+                character.key,
+            );
+        }
         renderMemoryPanel(context, settings);
         renderStatus(context, settings);
     });
@@ -619,6 +680,7 @@ function createSettingsPanel(context, settings) {
                 </label>
 
                 <button id="${MEMORY_FULL_NEXT_ID}" type="button" class="menu_button st-auto-memory-full-next">Bơm toàn bộ ký ức vào lượt kế tiếp</button>
+                <button id="${MEMORY_RECALL_FAILED_ID}" type="button" class="menu_button st-auto-memory-recall-failed">Recall ký ức lỗi</button>
 
                 <div class="st-auto-memory-provider">
                     <b>Memory AI Provider</b>
@@ -763,12 +825,26 @@ async function init() {
                         ? `✓ Đã ghi sự kiện mới từ message #${payload.messageId}.`
                         : `✓ Đã đọc message #${payload.messageId}; không có sự kiện mới cần ghi.`;
                     setMemoryStatus('success', suffix, key);
-                } else if (result?.reason === 'error') {
-                    setMemoryStatus('error', `Lỗi Memory AI: ${result.error?.message ?? 'Không rõ lỗi'}`, key);
-                    console.error('[ST Auto Prompt Reminder] Memory AI processing failed.', result.error);
+                } else if (result?.reason === 'retry-exhausted') {
+                    setMemoryStatus(
+                        'error',
+                        `⚠ Message #${payload.messageId} chưa được ghi sau 5 lần retry. Dùng “Recall ký ức lỗi” khi API ổn định lại.`,
+                        key,
+                    );
+                    console.error('[ST Auto Prompt Reminder] Memory AI retry exhausted.', result.error);
                 } else if (result?.reason === 'provider-not-configured') {
                     setMemoryStatus('warning', 'Memory đang bật nhưng chưa cấu hình Base URL và model.', key);
                 }
+                renderMemoryPanel(context, settings);
+                renderStatus(context, settings);
+            },
+            (retry, payload) => {
+                const key = payload.character?.key ?? '';
+                setMemoryStatus(
+                    'working',
+                    `Message #${payload.messageId} call Memory thất bại · tự thử lại ${retry.retryNumber}/${retry.maxRetries} sau ${Math.round(retry.retryDelayMs / 1000)} giây.`,
+                    key,
+                );
                 renderMemoryPanel(context, settings);
                 renderStatus(context, settings);
             },
@@ -789,7 +865,7 @@ async function init() {
     }
 
     createSettingsPanel(context, settings);
-    console.log('[ST Auto Prompt Reminder] Loaded v0.3.1.');
+    console.log('[ST Auto Prompt Reminder] Loaded v0.3.3.');
 }
 
 export function onDisable() {

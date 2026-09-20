@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     processReceivedAssistantMessage,
     registerMemoryCaptureHook,
+    recallFailedMemoryMessages,
     selectRelevantMemoryForPrompt,
 } from '../src/memory-runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory } from '../src/memory-core.js';
@@ -97,7 +98,7 @@ test('same Message ID is skipped even if MESSAGE_RECEIVED fires again with chang
     assert.deepEqual(second, { processed: false, reason: 'duplicate' });
 });
 
-test('memory request error leaves Event Log unchanged and reports isolated failure', async () => {
+test('memory request error leaves Event Log unchanged after retry exhaustion', async () => {
     const settings = makeSettings();
     const card = getOrCreateCardMemory(settings, alice);
     card.enabled = true;
@@ -113,10 +114,11 @@ test('memory request error leaves Event Log unchanged and reports isolated failu
         character: alice,
         messageId: 0,
         requestMemoryUpdate: async () => { throw new Error('network down'); },
+        wait: async () => {},
     });
 
     assert.equal(result.processed, false);
-    assert.equal(result.reason, 'error');
+    assert.equal(result.reason, 'retry-exhausted');
     assert.match(result.error.message, /network down/);
     assert.equal(card.eventLog, 'OLD');
 });
@@ -229,4 +231,158 @@ test('one-shot full-memory override bypasses selector and returns complete Event
     assert.equal(result.consumeFullNext, true);
     assert.match(result.text, /EVENT A/);
     assert.match(result.text, /EVENT B/);
+});
+
+
+test('Memory recorder retries five times with 20 second gaps before succeeding', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.enabled = true;
+    const context = {
+        chat: [{ is_user: false, mes: '<story_scene>A reached the station.</story_scene>' }],
+        saveSettingsDebounced() {},
+    };
+    const waits = [];
+    const retryEvents = [];
+    let calls = 0;
+
+    const result = await processReceivedAssistantMessage({
+        context,
+        settings,
+        character: alice,
+        messageId: 0,
+        requestMemoryUpdate: async () => {
+            calls += 1;
+            if (calls < 6) throw new Error(`temporary failure ${calls}`);
+            return '{"has_event":false,"event_text":""}';
+        },
+        wait: async (ms) => { waits.push(ms); },
+        onRetry: (info) => retryEvents.push(info),
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(calls, 6);
+    assert.deepEqual(waits, [20000, 20000, 20000, 20000, 20000]);
+    assert.equal(retryEvents.length, 5);
+    assert.deepEqual(retryEvents.map((item) => item.retryNumber), [1, 2, 3, 4, 5]);
+    assert.equal(retryEvents.every((item) => item.retryDelayMs === 20000), true);
+    assert.deepEqual(card.failedMessages, {});
+});
+
+test('Memory recorder persists failed message after initial call plus five retries', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.enabled = true;
+    const context = {
+        chat: [{ is_user: false, mes: '<story_scene>A reached the station.</story_scene>' }],
+        saveSettingsDebouncedCalls: 0,
+        saveSettingsDebounced() { this.saveSettingsDebouncedCalls += 1; },
+    };
+    let calls = 0;
+
+    const result = await processReceivedAssistantMessage({
+        context,
+        settings,
+        character: alice,
+        messageId: 0,
+        requestMemoryUpdate: async () => { calls += 1; throw new Error('network down'); },
+        wait: async () => {},
+        now: () => 9876,
+    });
+
+    assert.equal(calls, 6);
+    assert.equal(result.processed, false);
+    assert.equal(result.reason, 'retry-exhausted');
+    assert.equal(result.attempts, 6);
+    assert.deepEqual(card.failedMessages['0'], {
+        messageId: '0',
+        attempts: 6,
+        lastError: 'network down',
+        failedAt: 9876,
+        messageText: '<story_scene>A reached the station.</story_scene>',
+    });
+    assert.equal(card.processedMessageIds['0'], undefined);
+    assert.equal(context.saveSettingsDebouncedCalls, 1);
+});
+
+test('successful processing clears an existing failed queue entry for the same Message ID', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.enabled = true;
+    card.failedMessages['0'] = { messageId: '0', attempts: 6, lastError: 'old error', failedAt: 1 };
+    const context = {
+        chat: [{ is_user: false, mes: '<story_scene>A reached the station.</story_scene>' }],
+        saveSettingsDebounced() {},
+    };
+
+    const result = await processReceivedAssistantMessage({
+        context,
+        settings,
+        character: alice,
+        messageId: 0,
+        requestMemoryUpdate: async () => '{"has_event":false,"event_text":""}',
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(card.failedMessages['0'], undefined);
+});
+
+test('recallFailedMemoryMessages recalls every queued Message ID and reports remaining failures', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.enabled = true;
+    card.failedMessages = {
+        '4': { messageId: '4', attempts: 6, lastError: 'x', failedAt: 1, messageText: 'saved 4' },
+        '9': { messageId: '9', attempts: 6, lastError: 'y', failedAt: 2, messageText: 'saved 9' },
+    };
+    const context = { chat: [] };
+    const seen = [];
+
+    const result = await recallFailedMemoryMessages({
+        context,
+        settings,
+        character: alice,
+        processor: async ({ messageId, messageOverride }) => {
+            seen.push(`${messageId}:${messageOverride}`);
+            if (String(messageId) === '4') {
+                delete card.failedMessages['4'];
+                return { processed: true };
+            }
+            return { processed: false, reason: 'retry-exhausted' };
+        },
+    });
+
+    assert.deepEqual(seen, ['4:saved 4', '9:saved 9']);
+    assert.equal(result.total, 2);
+    assert.equal(result.recovered, 1);
+    assert.deepEqual(result.remainingIds, ['9']);
+});
+
+test('registerMemoryCaptureHook forwards retry progress to the UI callback', async () => {
+    const handlers = new Map();
+    const context = {
+        event_types: { MESSAGE_RECEIVED: 'message_received' },
+        eventSource: {
+            on(type, handler) { handlers.set(type, handler); },
+            removeListener(type, handler) { if (handlers.get(type) === handler) handlers.delete(type); },
+        },
+    };
+    const progress = [];
+
+    registerMemoryCaptureHook(
+        context,
+        () => ({ marker: 'settings' }),
+        () => alice,
+        async (payload) => {
+            payload.onRetry({ messageId: '7', retryNumber: 2, maxRetries: 5, retryDelayMs: 20000, error: new Error('x') });
+            return { processed: false, reason: 'retry-exhausted' };
+        },
+        () => {},
+        (info, payload) => progress.push({ info, payload }),
+    );
+
+    await handlers.get('message_received')(7);
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0].info.retryNumber, 2);
+    assert.equal(progress[0].payload.messageId, 7);
 });

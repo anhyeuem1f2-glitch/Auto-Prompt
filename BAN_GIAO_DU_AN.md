@@ -333,3 +333,82 @@ Giữ Event Memory chính xác nhưng không paste toàn bộ Event Log vào mod
 ## GitHub
 
 Chỉ cần ghi đè/push các file ở danh sách trên.
+
+---
+
+# Release v0.3.3 — Auto Retry + Manual Recall cho Memory AI
+
+## Nguyên nhân thay đổi
+
+Ở v0.3.2, `processReceivedAssistantMessage()` chỉ thử Memory AI một lần. Nếu request lỗi mạng/provider/JSON parse thì hàm trả lỗi ngay, Event Log không bị sửa nhưng message đó cũng không có cơ chế tự chạy lại hay hàng đợi phục hồi. Người dùng có thể không để ý status và mất một đoạn ký ức khỏi Event Log.
+
+## Fix v0.3.3
+
+- Memory recorder gọi lần đầu như cũ.
+- Nếu call/parse thất bại, tự retry thêm **5 lần**.
+- Mỗi retry cách nhau **20.000 ms (20 giây)**.
+- Tổng số attempt tối đa cho một chu kỳ = **6** (1 lần đầu + 5 retry).
+- Trong lúc retry, UI status hiển thị Message ID, lần retry `x/5` và thời gian chờ 20 giây.
+- Nếu hết 5 retry vẫn lỗi, card lưu message vào `failedMessages` persistent queue.
+- Mỗi failed entry lưu:
+  - `messageId`
+  - `attempts`
+  - `lastError`
+  - `failedAt`
+  - `messageText` — snapshot response gốc, để có thể Recall kể cả khi chat hiện tại đã đổi hoặc index message không còn khớp.
+- Thêm nút **Recall ký ức lỗi (N)** trong drawer Memory.
+- Recall lần lượt toàn bộ message lỗi của card hiện tại.
+- Recall thành công: recorder ghi event/index như bình thường và xóa entry khỏi failed queue.
+- Recall vẫn lỗi: entry giữ nguyên trong queue; người dùng có thể bấm Recall lại sau.
+- Recall thủ công cũng dùng chu kỳ 5 retry/20 giây mới nếu provider vẫn lỗi.
+- `processedMessageIds` chỉ được đánh dấu sau khi Memory AI trả dữ liệu hợp lệ, vì vậy failure không bị nhầm là đã xử lý.
+- Dedupe Message ID vẫn được giữ sau khi Recall thành công.
+
+## Migration/storage
+
+- Memory schema nâng `2 → 3`.
+- Card cũ tự bổ sung `failedMessages: {}`; Event Log/index/provider hiện có giữ nguyên.
+- `failedMessages` nằm trong extension settings theo card, nên tồn tại qua reload.
+
+## Verification v0.3.3
+
+Regression mới bao phủ:
+
+- thất bại 5 lần rồi thành công ở attempt thứ 6;
+- đúng 5 khoảng chờ, mỗi khoảng 20 giây;
+- sau 6 lần đều lỗi thì queue persistent được tạo;
+- Event Log không bị thay đổi khi retry exhausted;
+- failed queue giữ snapshot `messageText`;
+- xử lý/Recall thành công xóa failed entry;
+- Recall nhiều failed Message ID và báo những ID còn lỗi;
+- `registerMemoryCaptureHook` forward retry progress cho UI;
+- contract test xác nhận nút `Recall ký ức lỗi` và wiring helper;
+- migration/default memory schema v3.
+
+Lệnh verification bắt buộc:
+
+```bash
+npm test
+npm run check
+```
+
+Trước khi phát hành, phải giải nén `Auto-prompt.zip` vào thư mục sạch và chạy lại cả hai lệnh trên artifact đã đóng gói.
+
+## File thay đổi v0.3.3
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `style.css`
+- `src/memory-core.js`
+- `src/memory-runtime.js`
+- `test/extension-contract.test.mjs`
+- `test/memory-core.test.mjs`
+- `test/memory-runtime.test.mjs`
+- `test/reminder-core.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+## Quy tắc bàn giao tiếp tục áp dụng
+
+Mọi release ZIP phải có root `Auto-prompt/` và luôn chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng release hiện tại. Không phát hành ZIP mới với file bàn giao cũ.

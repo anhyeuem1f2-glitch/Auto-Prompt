@@ -252,3 +252,19 @@ Lưu ý: Memory recorder vẫn đọc toàn bộ Event Log để liên kết s�
 - Bấm lần hai trước khi generate: hủy cờ `fullInjectNext`, lượt kế tiếp quay lại Auto Relevant bình thường.
 - Nếu Event Log bị xóa sau khi đã xếp full-memory, nút vẫn giữ khả năng bấm để hủy; không thể rơi vào trạng thái đã xếp nhưng nút bị khóa.
 - Quy tắc đóng gói release: `Auto-prompt.zip` luôn phải chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng với release hiện tại.
+
+## v0.3.3 — Auto Retry + Recall Memory lỗi
+
+Bản này chống mất ký ức khi Memory AI/provider lỗi tạm thời.
+
+- Mỗi Memory recorder call thất bại sẽ **tự retry thêm 5 lần** sau lần gọi đầu tiên, tổng tối đa 6 lần gọi.
+- Khoảng cách giữa mỗi retry là **20 giây**.
+- UI status báo rõ Message ID nào đang retry, lần `x/5`, và khoảng chờ 20 giây.
+- Sau khi hết 5 retry mà vẫn lỗi, message được lưu vào **Failed Memory Queue theo card** thay vì bị bỏ quên.
+- Failed Queue được lưu trong extension settings, có `Message ID`, số lần đã thử, lỗi cuối, thời điểm lỗi và **snapshot response gốc** để Recall không phụ thuộc chat hiện tại còn giữ message ở đúng index hay không.
+- UI thêm nút **Recall ký ức lỗi (N)**. Nút chỉ bật khi card hiện tại còn message lỗi.
+- Recall chạy lại toàn bộ message đang chờ. Message thành công tự biến mất khỏi queue; message vẫn lỗi tiếp tục được giữ để có thể Recall lại sau.
+- Một lần Recall thủ công mở một chu kỳ gọi mới và vẫn được hưởng 5 auto-retry/20 giây nếu provider tiếp tục chập chờn.
+- Dedupe theo Message ID vẫn giữ nguyên: khi một message Recall thành công, event không thể bị append lần hai do hook phát lại.
+
+Failed Memory Queue không được inject vào model chính. Nó chỉ là hàng đợi phục hồi nội bộ cho recorder.
