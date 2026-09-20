@@ -7,7 +7,7 @@ import {
 import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory, toggleFullInjectNext } from './src/memory-core.js';
 import { loadProviderModels, testProviderConnection } from './src/memory-api.js';
-import { processReceivedAssistantMessage, recallFailedMemoryMessages, registerMemoryCaptureHook, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
+import { processReceivedAssistantMessage, recallFailedMemoryMessages, registerMemoryCaptureHook, registerMemoryReconcileHooks, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
 
 const ROOT_ID = 'st-auto-prompt-reminder-settings';
 const TOGGLE_ID = 'st-auto-prompt-enabled';
@@ -32,12 +32,15 @@ const MEMORY_MODEL_ID = 'st-auto-memory-model';
 const MEMORY_TEST_ID = 'st-auto-memory-test-connection';
 const MEMORY_STATUS_ID = 'st-auto-memory-status';
 const MEMORY_CARD_ID = 'st-auto-memory-card';
+const MEMORY_CHAT_ID = 'st-auto-memory-chat-id';
 
 let initialized = false;
 let cleanupGenerationHook = null;
 let cleanupFinalPromptHook = null;
 let cleanupMemoryHook = null;
 let cleanupCardRefreshHook = null;
+let cleanupMemoryReconcileHook = null;
+let fallbackChatEpoch = 0;
 let lastInjectionInfo = null;
 let selectedPromptId = null;
 let lastMemoryStatus = null;
@@ -67,6 +70,32 @@ function activeCharacter(context) {
     return resolveCharacterIdentity(currentContext(context));
 }
 
+function getCurrentChatId(context) {
+    const ctx = currentContext(context);
+    const direct = ctx?.getCurrentChatId?.();
+    const metadata = ctx?.chatMetadata ?? ctx?.chat_metadata ?? {};
+    const candidate = direct
+        ?? ctx?.chatId
+        ?? ctx?.chat_id
+        ?? metadata?.chat_id
+        ?? metadata?.chatId
+        ?? metadata?.file_name
+        ?? metadata?.fileName;
+    const value = String(candidate ?? '').trim();
+    return value || `unsaved:${fallbackChatEpoch}`;
+}
+
+function activeMemoryCharacter(context) {
+    const character = activeCharacter(context);
+    if (!character) return null;
+    return { ...character, chatId: getCurrentChatId(context) };
+}
+
+function memoryStatusKey(character) {
+    if (!character) return '';
+    return `${character.key}::${character.chatId ?? ''}`;
+}
+
 function getSelectedPrompt(settings) {
     return settings.prompts.find((prompt) => prompt.id === selectedPromptId) ?? null;
 }
@@ -91,7 +120,8 @@ async function persist(context, settings) {
 function getStatusText(context, settings) {
     const character = activeCharacter(context);
     const merged = mergeActivePrompts(settings, character);
-    const card = character ? getOrCreateCardMemory(settings, character) : null;
+    const memoryCharacter = activeMemoryCharacter(context);
+    const card = memoryCharacter ? getOrCreateCardMemory(settings, memoryCharacter) : null;
 
     if (lastInjectionInfo?.finalStage) {
         const time = new Date(lastInjectionInfo.at).toLocaleTimeString();
@@ -130,13 +160,13 @@ function setMemoryStatus(kind, message, cardKey = '') {
 }
 
 function getMemoryStatusText(context, settings) {
-    const character = activeCharacter(context);
+    const character = activeMemoryCharacter(context);
     if (!character) return 'Chưa xác định card hiện tại.';
 
     const memory = ensureMemorySettings(settings);
     const card = getOrCreateCardMemory(settings, character);
 
-    if (lastMemoryStatus && (!lastMemoryStatus.cardKey || lastMemoryStatus.cardKey === character.key)) {
+    if (lastMemoryStatus && (!lastMemoryStatus.cardKey || lastMemoryStatus.cardKey === memoryStatusKey(character))) {
         return lastMemoryStatus.message;
     }
 
@@ -171,11 +201,12 @@ function renderMemoryModelOptions(settings) {
 }
 
 function renderMemoryPanel(context, settings) {
-    const character = activeCharacter(context);
+    const character = activeMemoryCharacter(context);
     const memory = ensureMemorySettings(settings);
     const card = character ? getOrCreateCardMemory(settings, character) : null;
 
     const cardLabel = document.getElementById(MEMORY_CARD_ID);
+    const chatLabel = document.getElementById(MEMORY_CHAT_ID);
     const enabled = document.getElementById(MEMORY_ENABLED_ID);
     const autoRelevant = document.getElementById(MEMORY_AUTO_RELEVANT_ID);
     const fullNext = document.getElementById(MEMORY_FULL_NEXT_ID);
@@ -189,6 +220,11 @@ function renderMemoryPanel(context, settings) {
         cardLabel.textContent = character
             ? `Card hiện tại: ${character.name || character.key}`
             : 'Card hiện tại: không xác định';
+    }
+    if (chatLabel) {
+        chatLabel.textContent = character
+            ? `Chat ID hiện tại: ${character.chatId}`
+            : 'Chat ID hiện tại: không xác định';
     }
 
     if (enabled) {
@@ -253,7 +289,7 @@ function bindMemoryControls(context, settings) {
     const testConnection = document.getElementById(MEMORY_TEST_ID);
 
     enabled?.addEventListener('change', () => {
-        const character = activeCharacter(context);
+        const character = activeMemoryCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
         card.enabled = enabled.checked;
@@ -264,7 +300,7 @@ function bindMemoryControls(context, settings) {
     });
 
     autoRelevant?.addEventListener('change', () => {
-        const character = activeCharacter(context);
+        const character = activeMemoryCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
         card.autoRelevantEnabled = autoRelevant.checked;
@@ -276,11 +312,11 @@ function bindMemoryControls(context, settings) {
     });
 
     fullNext?.addEventListener('click', () => {
-        const character = activeCharacter(context);
+        const character = activeMemoryCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
         if (!card.fullInjectNext && !card.eventLog.trim()) {
-            setMemoryStatus('warning', 'Nhật ký sự kiện đang trống, không có gì để bơm.', character.key);
+            setMemoryStatus('warning', 'Nhật ký sự kiện đang trống, không có gì để bơm.', memoryStatusKey(character));
             renderMemoryPanel(context, settings);
             return;
         }
@@ -291,7 +327,7 @@ function bindMemoryControls(context, settings) {
             scheduled
                 ? '✓ Đã xếp toàn bộ Memory cho lượt generation kế tiếp. Bấm lại nút để hủy.'
                 : 'Đã hủy bơm toàn bộ Memory ở lượt kế tiếp.',
-            character.key,
+            memoryStatusKey(character),
         );
         context.saveSettingsDebounced();
         renderMemoryPanel(context, settings);
@@ -299,7 +335,7 @@ function bindMemoryControls(context, settings) {
     });
 
     recallFailed?.addEventListener('click', async () => {
-        const character = activeCharacter(context);
+        const character = activeMemoryCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
         const failedCount = Object.keys(card.failedMessages ?? {}).length;
@@ -322,7 +358,7 @@ function bindMemoryControls(context, settings) {
                     setMemoryStatus(
                         'working',
                         `Message #${info.messageId} vẫn lỗi · tự thử lại ${info.retryNumber}/${info.maxRetries} sau ${Math.round(info.retryDelayMs / 1000)} giây.`,
-                        character.key,
+                        memoryStatusKey(character),
                     );
                 } else if (info.type === 'recall-start') {
                     setMemoryStatus('working', `Đang Recall message #${info.messageId}...`, character.key);
@@ -337,7 +373,7 @@ function bindMemoryControls(context, settings) {
             setMemoryStatus(
                 'error',
                 `⚠ Recall được ${result.recovered}/${result.total}; còn lỗi: #${result.remainingIds.join(', #')}. Có thể bấm Recall lại sau.`,
-                character.key,
+                memoryStatusKey(character),
             );
         }
         renderMemoryPanel(context, settings);
@@ -345,7 +381,7 @@ function bindMemoryControls(context, settings) {
     });
 
     eventLog?.addEventListener('input', () => {
-        const character = activeCharacter(context);
+        const character = activeMemoryCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
         card.eventLog = eventLog.value;
@@ -668,6 +704,7 @@ function createSettingsPanel(context, settings) {
             </div>
             <div class="inline-drawer-content st-auto-memory-content">
                 <div id="${MEMORY_CARD_ID}" class="st-auto-memory-card"></div>
+                <div id="${MEMORY_CHAT_ID}" class="st-auto-memory-chat-id"></div>
 
                 <label class="st-auto-prompt-toggle" for="${MEMORY_ENABLED_ID}">
                     <input id="${MEMORY_ENABLED_ID}" type="checkbox">
@@ -787,16 +824,17 @@ async function init() {
         cleanupFinalPromptHook = registerFinalPromptHook(
             context,
             () => settings,
-            () => activeCharacter(context),
+            () => activeMemoryCharacter(context),
             async ({ settings: currentSettings, character, userPrompt, recentAssistant }) => {
                 const result = await selectRelevantMemoryForPrompt({
                     settings: currentSettings,
                     character,
                     userPrompt,
                     recentAssistant,
+                    context,
                 });
                 if (result.reason === 'error') {
-                    const key = character?.key ?? '';
+                    const key = memoryStatusKey(character);
                     setMemoryStatus('error', `Lỗi Memory selector: ${result.error?.message ?? 'Không rõ lỗi'}`, key);
                 }
                 return result;
@@ -816,10 +854,10 @@ async function init() {
         cleanupMemoryHook = registerMemoryCaptureHook(
             context,
             () => settings,
-            () => activeCharacter(context),
+            () => activeMemoryCharacter(context),
             (payload) => processReceivedAssistantMessage(payload),
             (result, payload) => {
-                const key = payload.character?.key ?? '';
+                const key = memoryStatusKey(payload.character);
                 if (result?.processed) {
                     const suffix = result.appended
                         ? `✓ Đã ghi sự kiện mới từ message #${payload.messageId}.`
@@ -839,7 +877,7 @@ async function init() {
                 renderStatus(context, settings);
             },
             (retry, payload) => {
-                const key = payload.character?.key ?? '';
+                const key = memoryStatusKey(payload.character);
                 setMemoryStatus(
                     'working',
                     `Message #${payload.messageId} call Memory thất bại · tự thử lại ${retry.retryNumber}/${retry.maxRetries} sau ${Math.round(retry.retryDelayMs / 1000)} giây.`,
@@ -853,19 +891,32 @@ async function init() {
         console.error('[ST Auto Prompt Reminder] MESSAGE_RECEIVED memory hook is unavailable.', error);
     }
 
-    const cardRefreshEvent = context.event_types?.CHAT_CHANGED ?? context.eventTypes?.CHAT_CHANGED;
-    if (cardRefreshEvent) {
-        const refresh = () => {
-            lastMemoryStatus = null;
-            renderMemoryPanel(context, settings);
-            renderStatus(context, settings);
-        };
-        context.eventSource.on(cardRefreshEvent, refresh);
-        cleanupCardRefreshHook = () => context.eventSource.removeListener(cardRefreshEvent, refresh);
+    try {
+        cleanupMemoryReconcileHook = registerMemoryReconcileHooks(
+            context,
+            () => settings,
+            () => activeMemoryCharacter(context),
+            undefined,
+            (result, payload) => {
+                if (payload.reason === 'chat-changed') fallbackChatEpoch += 1;
+                lastMemoryStatus = null;
+                if (result?.removedEventIds?.length) {
+                    setMemoryStatus(
+                        'info',
+                        `Đã đồng bộ Memory với chat hiện tại · xóa ${result.removedEventIds.length} event không còn tồn tại.`,
+                        memoryStatusKey(activeMemoryCharacter(context)),
+                    );
+                }
+                renderMemoryPanel(context, settings);
+                renderStatus(context, settings);
+            },
+        );
+    } catch (error) {
+        console.error('[ST Auto Prompt Reminder] Memory reconciliation hooks are unavailable.', error);
     }
 
     createSettingsPanel(context, settings);
-    console.log('[ST Auto Prompt Reminder] Loaded v0.3.3.');
+    console.log('[ST Auto Prompt Reminder] Loaded v0.3.4.');
 }
 
 export function onDisable() {
@@ -877,6 +928,8 @@ export function onDisable() {
     cleanupMemoryHook = null;
     cleanupCardRefreshHook?.();
     cleanupCardRefreshHook = null;
+    cleanupMemoryReconcileHook?.();
+    cleanupMemoryReconcileHook = null;
 
     const context = currentContext();
     if (context) {

@@ -18,6 +18,9 @@ import {
     appendEventText,
     createMessageSignature,
     toggleFullInjectNext,
+    formatMemoryEventBlock,
+    parseMemoryEventBlocks,
+    reconcileMemoryWithChat,
 } from '../src/memory-core.js';
 
 const alice = { key: 'avatar:Alice.png', avatar: 'Alice.png', name: 'Alice' };
@@ -26,10 +29,10 @@ test('ensureMemorySettings creates optional memory defaults with recording off',
     const root = {};
     const memory = ensureMemorySettings(root);
 
-    assert.equal(MEMORY_SCHEMA_VERSION, 3);
+    assert.equal(MEMORY_SCHEMA_VERSION, 4);
     assert.strictEqual(memory, root.memory);
     assert.deepEqual(memory, {
-        schemaVersion: 3,
+        schemaVersion: 4,
         provider: {
             baseUrl: '',
             apiKey: '',
@@ -191,7 +194,7 @@ test('ensureMemorySettings migrates legacy full-injection toggle into auto relev
     const memory = ensureMemorySettings(root);
     const card = memory.cards[alice.key];
 
-    assert.equal(memory.schemaVersion, 3);
+    assert.equal(memory.schemaVersion, 4);
     assert.equal(card.autoRelevantEnabled, true);
     assert.equal(card.fullInjectNext, false);
     assert.equal(card.injectEnabled, undefined);
@@ -285,8 +288,153 @@ test('ensureMemorySettings preserves a persistent per-card failed Memory queue',
     };
 
     const memory = ensureMemorySettings(root);
-    assert.equal(memory.schemaVersion, 3);
+    assert.equal(memory.schemaVersion, 4);
     assert.deepEqual(memory.cards[alice.key].failedMessages, {
-        '24': { messageId: '24', attempts: 6, lastError: 'network down', failedAt: 1234, messageText: '<story_scene>Saved response.</story_scene>' },
+        '24': { messageId: '24', attempts: 6, lastError: 'network down', failedAt: 1234, messageText: '<story_scene>Saved response.</story_scene>', sourceSignature: '' },
     });
+});
+
+
+test('event log stores each event as an inspectable block with chat and message IDs', () => {
+    const block = formatMemoryEventBlock({
+        chatId: 'Chat 2026-09-20 16-30-00',
+        messageId: '24',
+        sourceSignature: '24:deadbeef',
+        eventText: 'A reached Saffron City after taking the bus.',
+    });
+
+    assert.match(block, /^<MEMORY_EVENT chat_id="Chat 2026-09-20 16-30-00" message_id="24" source_signature="24:deadbeef">/);
+    assert.match(block, /A reached Saffron City/);
+    assert.match(block, /<\/MEMORY_EVENT>$/);
+
+    const parsed = parseMemoryEventBlocks(block);
+    assert.deepEqual(parsed, [{
+        chatId: 'Chat 2026-09-20 16-30-00',
+        messageId: '24',
+        sourceSignature: '24:deadbeef',
+        eventText: 'A reached Saffron City after taking the bus.',
+        text: block,
+    }]);
+});
+
+test('memory is isolated by card plus chat id so a New Chat starts with an empty Event Log', () => {
+    const root = {};
+    ensureMemorySettings(root);
+    const chatA = { ...alice, chatId: 'chat-A' };
+    const chatB = { ...alice, chatId: 'chat-B' };
+
+    const first = getOrCreateCardMemory(root, chatA);
+    first.enabled = true;
+    first.autoRelevantEnabled = true;
+    first.eventLog = formatMemoryEventBlock({
+        chatId: 'chat-A',
+        messageId: '2',
+        sourceSignature: '2:aaaa1111',
+        eventText: 'Old chat event.',
+    });
+
+    const second = getOrCreateCardMemory(root, chatB);
+    assert.notStrictEqual(second, first);
+    assert.equal(second.eventLog, '');
+    assert.deepEqual(second.eventIndex, []);
+    assert.deepEqual(second.processedMessageIds, {});
+    assert.deepEqual(second.failedMessages, {});
+    assert.equal(second.enabled, true);
+    assert.equal(second.autoRelevantEnabled, true);
+    assert.strictEqual(getCardMemory(root, chatA), first);
+    assert.strictEqual(getCardMemory(root, chatB), second);
+});
+
+test('v0.3.3 card memory migrates once into the currently opened chat and legacy log becomes blocks', () => {
+    const root = {
+        memory: {
+            schemaVersion: 3,
+            provider: { baseUrl: '', apiKey: '', model: '', models: [] },
+            cards: {
+                [alice.key]: {
+                    character: alice,
+                    enabled: true,
+                    autoRelevantEnabled: true,
+                    fullInjectNext: false,
+                    eventLog: 'Message ID 4: A met B at the eastern gate.',
+                    eventIndex: [],
+                    processedMessageIds: { '4': true },
+                    processedSignatures: { '4': '4:12345678' },
+                    failedMessages: {},
+                    updatedAt: 50,
+                },
+            },
+        },
+    };
+
+    const current = getOrCreateCardMemory(root, { ...alice, chatId: 'current-chat' });
+    assert.match(current.eventLog, /<MEMORY_EVENT chat_id="current-chat" message_id="4" source_signature="4:12345678">/);
+    assert.match(current.eventLog, /A met B at the eastern gate/);
+    assert.equal(root.memory.cards[alice.key], undefined);
+});
+
+test('reconcile removes memory whose source message disappeared after rewind or deletion', () => {
+    const root = {};
+    ensureMemorySettings(root);
+    const identity = { ...alice, chatId: 'chat-A' };
+    const card = getOrCreateCardMemory(root, identity);
+    const message0 = '<story_scene>First event.</story_scene>';
+    const message2 = '<story_scene>Later event.</story_scene>';
+    const sig0 = createMessageSignature(0, message0);
+    const sig2 = createMessageSignature(2, message2);
+    card.eventLog = [
+        formatMemoryEventBlock({ chatId: 'chat-A', messageId: '0', sourceSignature: sig0, eventText: 'First event.' }),
+        formatMemoryEventBlock({ chatId: 'chat-A', messageId: '2', sourceSignature: sig2, eventText: 'Later event.' }),
+    ].join('\n\n');
+    card.eventIndex = [
+        { messageId: '0', summary: 'first', actors: [], locations: [], topics: [], entities: [], relatedIds: [] },
+        { messageId: '2', summary: 'later', actors: [], locations: [], topics: [], entities: [], relatedIds: [] },
+    ];
+    card.processedMessageIds = { '0': true, '2': true };
+    card.processedSignatures = { '0': sig0, '2': sig2 };
+    card.failedMessages = {
+        '2': { messageId: '2', attempts: 6, lastError: 'x', failedAt: 1, messageText: message2 },
+    };
+
+    const result = reconcileMemoryWithChat(card, 'chat-A', [
+        { is_user: false, is_system: false, mes: message0 },
+        { is_user: true, mes: 'rewound from here' },
+    ]);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.removedEventIds, ['2']);
+    assert.match(card.eventLog, /message_id="0"/);
+    assert.doesNotMatch(card.eventLog, /message_id="2"/);
+    assert.deepEqual(card.eventIndex.map((entry) => entry.messageId), ['0']);
+    assert.equal(card.processedMessageIds['2'], undefined);
+    assert.equal(card.processedSignatures['2'], undefined);
+    assert.equal(card.failedMessages['2'], undefined);
+});
+
+test('reconcile removes stale memory when the same Message ID is replaced by a swipe', () => {
+    const root = {};
+    ensureMemorySettings(root);
+    const identity = { ...alice, chatId: 'chat-A' };
+    const card = getOrCreateCardMemory(root, identity);
+    const oldText = '<story_scene>A chose the red door.</story_scene>';
+    const newText = '<story_scene>A chose the blue door.</story_scene>';
+    const oldSignature = createMessageSignature(3, oldText);
+    card.eventLog = formatMemoryEventBlock({
+        chatId: 'chat-A', messageId: '3', sourceSignature: oldSignature, eventText: 'A chose the red door.',
+    });
+    card.eventIndex = [{ messageId: '3', summary: 'red door', actors: ['A'], locations: [], topics: [], entities: [], relatedIds: [] }];
+    card.processedMessageIds = { '3': true };
+    card.processedSignatures = { '3': oldSignature };
+
+    const chat = [
+        { is_user: true, mes: '0' },
+        { is_user: true, mes: '1' },
+        { is_user: true, mes: '2' },
+        { is_user: false, is_system: false, mes: newText },
+    ];
+    reconcileMemoryWithChat(card, 'chat-A', chat);
+
+    assert.equal(card.eventLog, '');
+    assert.deepEqual(card.eventIndex, []);
+    assert.equal(card.processedMessageIds['3'], undefined);
 });

@@ -268,3 +268,39 @@ Bản này chống mất ký ức khi Memory AI/provider lỗi tạm thời.
 - Dedupe theo Message ID vẫn giữ nguyên: khi một message Recall thành công, event không thể bị append lần hai do hook phát lại.
 
 Failed Memory Queue không được inject vào model chính. Nó chỉ là hàng đợi phục hồi nội bộ cho recorder.
+
+## v0.3.4 — Memory theo từng Chat + tự đồng bộ khi rewind/xóa/swipe
+
+v0.3.4 sửa việc Event Memory trước đây chỉ scope theo card. Từ bản này Memory được nhận diện theo **card + Chat ID**, vì vậy:
+
+- **New Chat của cùng card bắt đầu Event Log trống**; không kế thừa sự kiện của chat cũ.
+- Bật/tắt `Ghi sự kiện` và `Auto Relevant` được kế thừa tiện lợi từ phiên chat gần nhất của card, nhưng dữ liệu Event Log/index/processed/failed queue là riêng từng chat.
+- UI hiển thị rõ `Card hiện tại` và `Chat ID hiện tại`.
+- Extension nghe `CHAT_CHANGED`, `MESSAGE_DELETED` và `MESSAGE_SWIPED`, đồng thời còn reconcile trước khi ghi/Recall/select Memory.
+- Nếu source assistant message của một event đã biến mất do rewind/xóa, event đó tự bị xóa khỏi Event Log, hidden index, processed markers và failed Recall queue.
+- Nếu cùng Message ID bị thay bằng một swipe khác, `source_signature` không còn khớp nên ký ức của swipe cũ bị loại bỏ.
+- Dữ liệu v0.3.3 cũ được migrate một lần vào chat đang mở khi nâng cấp; log `Message ID ...` cũ được đổi sang block mới.
+
+### Định dạng Event Log mới
+
+Mỗi event được extension tự bọc thành một block có metadata nguồn rõ ràng:
+
+```text
+<MEMORY_EVENT chat_id="Thế Giới Pokémon - 2026-09-20" message_id="24" source_signature="24:1a2b3c4d">
+Nội dung sự kiện chi tiết do Memory AI ghi...
+</MEMORY_EVENT>
+```
+
+`chat_id` giúp kiểm tra event thuộc đúng phiên chat nào. `message_id` xác định source message, còn `source_signature` giúp phát hiện source đã bị sửa/thay bằng swipe khác.
+
+Khi Auto Relevant chọn event, model chính nhận nguyên các `<MEMORY_EVENT>` block được chọn bên trong `<MEMORY_CONTEXT>`, nên Prompt Reviewer dễ kiểm tra chính xác ID nào đã được đưa vào.
+
+### Quy tắc reconcile
+
+Trước khi Memory được ghi, Recall hoặc inject, extension so Event Log với `context.chat` hiện tại:
+
+1. Source message còn tồn tại và vẫn là assistant message → giữ.
+2. Source message đã bị xóa/rewind → xóa event tương ứng.
+3. Source cùng Message ID nhưng nội dung đổi → signature khác → xóa event cũ.
+4. Hidden index, processed markers và failed queue được dọn cùng event/source tương ứng.
+5. Nếu log trở thành rỗng, `Bơm toàn bộ ký ức lượt kế tiếp` cũng tự hủy để không giữ trạng thái ma.

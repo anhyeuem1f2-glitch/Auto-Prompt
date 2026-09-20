@@ -1,5 +1,6 @@
 import {
     getCardMemory,
+    getOrCreateCardMemory,
     ensureMemorySettings,
     extractCanonicalNarrative,
     buildMemoryMessages,
@@ -11,6 +12,8 @@ import {
     parseMemorySelectionResponse,
     selectEventTextByIds,
     buildMemoryContextText,
+    formatMemoryEventBlock,
+    reconcileMemoryWithChat,
 } from './memory-core.js';
 import { requestMemoryUpdate as requestMemoryUpdateDefault } from './memory-api.js';
 
@@ -74,7 +77,11 @@ export async function processReceivedAssistantMessage({
         return { processed: false, reason: 'not-assistant' };
     }
 
-    const card = getCardMemory(settings, character);
+    const card = getOrCreateCardMemory(settings, character);
+    if (character?.chatId) {
+        const reconcile = reconcileMemoryWithChat(card, character.chatId, context?.chat);
+        if (reconcile.changed) context?.saveSettingsDebounced?.();
+    }
     if (!card?.enabled) {
         return { processed: false, reason: 'memory-disabled' };
     }
@@ -108,7 +115,13 @@ export async function processReceivedAssistantMessage({
             const parsed = parseMemoryModelResponse(content);
 
             if (parsed.hasEvent) {
-                card.eventLog = appendEventText(card.eventLog, parsed.eventText);
+                const eventBlock = formatMemoryEventBlock({
+                    chatId: character?.chatId ?? '',
+                    messageId: messageKey,
+                    sourceSignature: signature,
+                    eventText: parsed.eventText,
+                });
+                card.eventLog = appendEventText(card.eventLog, eventBlock);
                 card.eventIndex = upsertEventIndexEntry(card.eventIndex, messageKey, parsed.index);
             }
 
@@ -148,6 +161,7 @@ export async function processReceivedAssistantMessage({
         lastError: lastError?.message ?? 'Unknown Memory AI error',
         failedAt: now(),
         messageText: message.mes,
+        sourceSignature: signature,
     };
     card.updatedAt = now();
     context?.saveSettingsDebounced?.();
@@ -167,7 +181,11 @@ export async function recallFailedMemoryMessages({
     processor = processReceivedAssistantMessage,
     onProgress = () => {},
 }) {
-    const card = getCardMemory(settings, character);
+    const card = getOrCreateCardMemory(settings, character);
+    if (character?.chatId) {
+        const reconcile = reconcileMemoryWithChat(card, character.chatId, context?.chat);
+        if (reconcile.changed) context?.saveSettingsDebounced?.();
+    }
     const queuedIds = Object.keys(card?.failedMessages ?? {});
     let recovered = 0;
 
@@ -199,8 +217,13 @@ export async function selectRelevantMemoryForPrompt({
     userPrompt,
     recentAssistant = '',
     requestMemorySelection = requestMemoryUpdateDefault,
+    context = null,
 }) {
-    const card = getCardMemory(settings, character);
+    const card = getOrCreateCardMemory(settings, character);
+    if (character?.chatId && context) {
+        const reconcile = reconcileMemoryWithChat(card, character.chatId, context?.chat);
+        if (reconcile.changed) context?.saveSettingsDebounced?.();
+    }
     if (!card?.eventLog?.trim()) return emptySelection('empty-log', 0);
 
     const totalEvents = Array.isArray(card.eventIndex) ? card.eventIndex.length : 0;
@@ -266,6 +289,55 @@ export async function selectRelevantMemoryForPrompt({
 
 function cleanPrompt(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+
+export function reconcileCurrentMemory({ context, settings, character }) {
+    const card = getOrCreateCardMemory(settings, character);
+    if (!card || !character?.chatId) return { changed: false, removedEventIds: [] };
+    const result = reconcileMemoryWithChat(card, character.chatId, context?.chat);
+    if (result.changed) {
+        card.updatedAt = Date.now();
+        context?.saveSettingsDebounced?.();
+    }
+    return result;
+}
+
+export function registerMemoryReconcileHooks(
+    context,
+    settingsProvider,
+    characterProvider,
+    reconciler = ({ context: currentContext, settings, character }) => reconcileCurrentMemory({ context: currentContext, settings, character }),
+    onResult = () => {},
+) {
+    const bindings = [
+        [context?.event_types?.CHAT_CHANGED ?? context?.eventTypes?.CHAT_CHANGED, 'chat-changed'],
+        [context?.event_types?.MESSAGE_DELETED ?? context?.eventTypes?.MESSAGE_DELETED, 'message-deleted'],
+        [context?.event_types?.MESSAGE_SWIPED ?? context?.eventTypes?.MESSAGE_SWIPED, 'message-swiped'],
+    ].filter(([eventType]) => Boolean(eventType));
+
+    const handlers = [];
+    for (const [eventType, reason] of bindings) {
+        const handler = async () => {
+            const payload = {
+                context,
+                settings: settingsProvider(),
+                character: characterProvider(),
+                reason,
+            };
+            const result = await reconciler(payload);
+            onResult(result, payload);
+            return result;
+        };
+        context.eventSource.on(eventType, handler);
+        handlers.push([eventType, handler]);
+    }
+
+    return () => {
+        for (const [eventType, handler] of handlers) {
+            context.eventSource.removeListener(eventType, handler);
+        }
+    };
 }
 
 export function registerMemoryCaptureHook(

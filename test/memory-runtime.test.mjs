@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
     processReceivedAssistantMessage,
     registerMemoryCaptureHook,
+    reconcileCurrentMemory,
+    registerMemoryReconcileHooks,
     recallFailedMemoryMessages,
     selectRelevantMemoryForPrompt,
 } from '../src/memory-runtime.js';
@@ -300,6 +302,7 @@ test('Memory recorder persists failed message after initial call plus five retri
         lastError: 'network down',
         failedAt: 9876,
         messageText: '<story_scene>A reached the station.</story_scene>',
+        sourceSignature: '0:8d8ac28a',
     });
     assert.equal(card.processedMessageIds['0'], undefined);
     assert.equal(context.saveSettingsDebouncedCalls, 1);
@@ -385,4 +388,86 @@ test('registerMemoryCaptureHook forwards retry progress to the UI callback', asy
     assert.equal(progress.length, 1);
     assert.equal(progress[0].info.retryNumber, 2);
     assert.equal(progress[0].payload.messageId, 7);
+});
+
+
+test('processReceivedAssistantMessage writes a block tagged with the active chat id', async () => {
+    const settings = makeSettings();
+    const identity = { ...alice, chatId: 'chat-A' };
+    const card = getOrCreateCardMemory(settings, identity);
+    card.enabled = true;
+    const response = '<story_scene>A arrived at Saffron City.</story_scene>';
+    const context = {
+        chat: [{ is_user: false, is_system: false, mes: response }],
+        saveSettingsDebounced() {},
+    };
+
+    const result = await processReceivedAssistantMessage({
+        context,
+        settings,
+        character: identity,
+        messageId: 0,
+        requestMemoryUpdate: async () => JSON.stringify({
+            has_event: true,
+            event_text: 'A arrived at Saffron City.',
+            index: { summary: 'arrival', actors: ['A'], locations: ['Saffron City'], topics: ['travel'], entities: [], related_ids: [] },
+        }),
+    });
+
+    assert.equal(result.processed, true);
+    assert.match(card.eventLog, /<MEMORY_EVENT chat_id="chat-A" message_id="0" source_signature="0:[0-9a-f]{8}">/);
+    assert.match(card.eventLog, /A arrived at Saffron City/);
+});
+
+test('reconcileCurrentMemory uses the current chat and removes invalidated Event Log entries', () => {
+    const settings = makeSettings();
+    const identity = { ...alice, chatId: 'chat-A' };
+    const card = getOrCreateCardMemory(settings, identity);
+    card.eventLog = '<MEMORY_EVENT chat_id="chat-A" message_id="1" source_signature="1:00000000">\nOld event.\n</MEMORY_EVENT>';
+    card.eventIndex = [{ messageId: '1', summary: 'old', actors: [], locations: [], topics: [], entities: [], relatedIds: [] }];
+    card.processedMessageIds = { '1': true };
+    card.processedSignatures = { '1': '1:00000000' };
+    let saves = 0;
+    const context = {
+        chat: [{ is_user: true, mes: 'hello' }],
+        saveSettingsDebounced() { saves += 1; },
+    };
+
+    const result = reconcileCurrentMemory({ context, settings, character: identity });
+    assert.equal(result.changed, true);
+    assert.equal(card.eventLog, '');
+    assert.equal(saves, 1);
+});
+
+test('registerMemoryReconcileHooks reconciles on chat changes, deletes, and swipes', async () => {
+    const handlers = new Map();
+    const context = {
+        event_types: {
+            CHAT_CHANGED: 'chat_changed',
+            MESSAGE_DELETED: 'message_deleted',
+            MESSAGE_SWIPED: 'message_swiped',
+        },
+        eventSource: {
+            on(type, handler) { handlers.set(type, handler); },
+            removeListener(type, handler) { if (handlers.get(type) === handler) handlers.delete(type); },
+        },
+        chat: [],
+        saveSettingsDebounced() {},
+    };
+    const seen = [];
+
+    const cleanup = registerMemoryReconcileHooks(
+        context,
+        () => ({ marker: 'settings' }),
+        () => ({ ...alice, chatId: 'chat-A' }),
+        (payload) => { seen.push(payload.reason); return { changed: false }; },
+    );
+
+    await handlers.get('chat_changed')();
+    await handlers.get('message_deleted')();
+    await handlers.get('message_swiped')();
+    assert.deepEqual(seen, ['chat-changed', 'message-deleted', 'message-swiped']);
+
+    cleanup();
+    assert.equal(handlers.size, 0);
 });

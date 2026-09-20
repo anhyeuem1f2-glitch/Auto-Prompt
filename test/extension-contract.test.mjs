@@ -6,13 +6,13 @@ async function read(path) {
     return readFile(new URL(path, import.meta.url), 'utf8');
 }
 
-test('manifest loads the extension entry point and stylesheet at v0.3.3', async () => {
+test('manifest loads the extension entry point and stylesheet at v0.3.4', async () => {
     const manifest = JSON.parse(await read('../manifest.json'));
 
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.3.3');
+    assert.equal(manifest.version, '0.3.4');
     assert.equal(Object.hasOwn(manifest, 'author'), false);
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
@@ -97,4 +97,23 @@ test('entry point reports final aggregate prompt count and text length', async (
 test('legacy single textarea id remains removed', async () => {
     const source = await read('../index.js');
     assert.doesNotMatch(source, /st-auto-prompt-text(?:"|'|`)/);
+});
+
+
+test('v0.3.4 exposes chat-scoped memory identity and reconciliation hooks', async () => {
+    const source = await read('../index.js');
+    const memoryRuntime = await read('../src/memory-runtime.js');
+    assert.match(source, /getCurrentChatId/);
+    assert.match(source, /Chat ID hiện tại/);
+    assert.match(source, /registerMemoryReconcileHooks/);
+    assert.match(memoryRuntime, /MESSAGE_DELETED/);
+    assert.match(memoryRuntime, /MESSAGE_SWIPED/);
+});
+
+test('memory event log uses inspectable MEMORY_EVENT blocks with chat and message ids', async () => {
+    const source = await read('../src/memory-core.js');
+    assert.match(source, /<MEMORY_EVENT/);
+    assert.match(source, /chat_id=/);
+    assert.match(source, /message_id=/);
+    assert.match(source, /source_signature=/);
 });

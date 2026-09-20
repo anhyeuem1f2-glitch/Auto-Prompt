@@ -1,5 +1,9 @@
 # BÀN GIAO DỰ ÁN — ST Auto Prompt Reminder
 
+> **CURRENT: v0.3.4 — Chat-scoped Memory + automatic reconcile**  
+> Memory hiện scope theo **Card + Chat ID**; New Chat có Event Log riêng. Rewind/delete/swipe tự loại ký ức có source message không còn tồn tại hoặc đã thay đổi. Event Log dùng `<MEMORY_EVENT chat_id="..." message_id="..." source_signature="...">` blocks. Retry/Recall v0.3.3, Auto Relevant v0.3.1 và final-system injection vẫn giữ nguyên.
+
+
 ## Phiên bản
 
 `v0.2.0` — 2026-09-17
@@ -412,3 +416,98 @@ Trước khi phát hành, phải giải nén `Auto-prompt.zip` vào thư mục s
 ## Quy tắc bàn giao tiếp tục áp dụng
 
 Mọi release ZIP phải có root `Auto-prompt/` và luôn chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng release hiện tại. Không phát hành ZIP mới với file bàn giao cũ.
+
+---
+
+# CURRENT RELEASE — v0.3.4 Chat-scoped Memory + Reconcile
+
+## Trạng thái hiện tại
+
+Đây là release hiện hành sau v0.3.3. Auto Prompt vẫn dùng final-stage system injection như các bản trước. Event Memory đã chuyển từ scope chỉ theo card sang **card + Chat ID** để New Chat, rewind, delete và swipe không giữ lại ký ức thuộc timeline cũ.
+
+## Root cause
+
+v0.3.3 lưu `memory.cards[character.key]`, nên mọi chat của cùng một card dùng chung `eventLog`, `eventIndex`, `processedMessageIds` và `failedMessages`. Vì vậy New Chat vẫn nhìn thấy Memory cũ. Ngoài ra extension chưa có bước reconcile Event Log với `context.chat`, nên khi người dùng rewind/xóa message hoặc đổi swipe, event đã ghi vẫn tồn tại dù source narrative không còn tồn tại.
+
+## Fix v0.3.4
+
+- Memory identity dùng **character key + current Chat ID**.
+- Lấy Chat ID ưu tiên qua `SillyTavern.getContext().getCurrentChatId()`, có fallback từ context/chat metadata.
+- New Chat của cùng card tạo memory session mới với:
+  - Event Log rỗng;
+  - hidden index rỗng;
+  - processed markers rỗng;
+  - failed Recall queue rỗng.
+- Hai preference `enabled` và `autoRelevantEnabled` được copy từ memory session gần nhất của cùng card để không bắt người dùng bật lại mỗi lần New Chat.
+- UI hiển thị cả `Card hiện tại` và `Chat ID hiện tại`.
+- Event mới không còn lưu raw `Message ID ...` rời rạc; extension tự bọc thành:
+
+```text
+<MEMORY_EVENT chat_id="..." message_id="24" source_signature="24:xxxxxxxx">
+<nội dung sự kiện chi tiết>
+</MEMORY_EVENT>
+```
+
+- `source_signature` được tính từ Message ID + nguyên văn assistant response nguồn.
+- Reconcile chạy ở các điểm:
+  - `CHAT_CHANGED`;
+  - `MESSAGE_DELETED`;
+  - `MESSAGE_SWIPED`;
+  - trước Memory recorder;
+  - trước Recall failed memory;
+  - trước Auto Relevant selector/full-memory injection.
+- Khi source message đã biến mất hoặc signature không còn khớp:
+  - xóa `<MEMORY_EVENT>` tương ứng;
+  - xóa hidden `eventIndex` tương ứng;
+  - xóa `processedMessageIds`/`processedSignatures` không còn hợp lệ;
+  - xóa failed queue entry của source đã bị loại khỏi timeline.
+- Nếu Event Log bị dọn thành rỗng, `fullInjectNext` tự reset false.
+- Migration v0.3.3:
+  - legacy memory của card được gắn một lần vào chat đang mở hiện tại;
+  - raw `Message ID ...` log được chuyển thành `<MEMORY_EVENT>` block;
+  - duplicate legacy Message ID được collapse trong quá trình block migration;
+  - sau migration, key legacy theo card được bỏ để chat khác không kế thừa Event Log.
+
+## Hành vi cần giữ cho các bản sau
+
+1. Auto Prompt Global/Character vẫn merge thành một final system message duy nhất.
+2. Memory recorder vẫn optional và có retry 5 lần, cách nhau 20 giây.
+3. Failed Memory vẫn có Recall thủ công.
+4. Auto Relevant selector chỉ thấy hidden index; model RP chính chỉ thấy full event block được chọn.
+5. Manual Full Memory vẫn là one-shot và có thể hủy trước generation.
+6. Memory không được leak giữa hai Chat ID khác nhau của cùng card.
+7. Rewind/delete/swipe phải invalidate Memory của source narrative đã biến mất/thay đổi.
+8. Mọi release ZIP phải có root `Auto-prompt/` và chứa `BAN_GIAO_DU_AN.md` được cập nhật đúng release.
+
+## Verification v0.3.4
+
+Regression mới bao phủ:
+
+- Event Log block có `chat_id`, `message_id`, `source_signature`.
+- New Chat cùng card nhận Event Log mới rỗng nhưng giữ preference bật/tắt Memory.
+- Migration v0.3.3 → v0.3.4 gắn legacy memory vào chat hiện tại và đổi log sang block.
+- Rewind/delete xóa event có source message không còn tồn tại.
+- Swipe thay nội dung cùng Message ID xóa event có signature cũ.
+- Recorder v0.3.4 ghi block với đúng Chat ID/signature.
+- Reconcile helper lưu thay đổi trở lại extension settings.
+- Hook reconcile nghe `CHAT_CHANGED`, `MESSAGE_DELETED`, `MESSAGE_SWIPED`.
+- Full regression suite và syntax checks phải pass trên source và ZIP giải nén sạch trước bàn giao.
+
+## File thay đổi v0.3.4
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `style.css`
+- `src/memory-core.js`
+- `src/memory-runtime.js`
+- `test/extension-contract.test.mjs`
+- `test/memory-core.test.mjs`
+- `test/memory-runtime.test.mjs`
+- `test/reminder-core.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+## GitHub
+
+Chỉ ghi đè/push các file trong danh sách v0.3.4 ở trên. `src/runtime.js`, `src/reminder-core.js`, `src/memory-api.js`, `LICENSE` không đổi trong release này.

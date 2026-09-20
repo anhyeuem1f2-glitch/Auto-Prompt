@@ -1,4 +1,4 @@
-export const MEMORY_SCHEMA_VERSION = 3;
+export const MEMORY_SCHEMA_VERSION = 4;
 
 const DEFAULT_PROVIDER = Object.freeze({
     baseUrl: '',
@@ -34,9 +34,18 @@ function normalizeCharacter(character) {
     const key = cleanString(character.key).trim();
     const avatar = cleanString(character.avatar);
     const name = cleanString(character.name);
+    const chatId = cleanString(character.chatId ?? character.chat_id).trim();
 
     if (!key) return null;
-    return { key, avatar, name };
+    return chatId ? { key, avatar, name, chatId } : { key, avatar, name };
+}
+
+function memoryStorageKey(character) {
+    const normalized = normalizeCharacter(character);
+    if (!normalized) return '';
+    return normalized.chatId
+        ? `${normalized.key}::chat:${encodeURIComponent(normalized.chatId)}`
+        : normalized.key;
 }
 
 function normalizeProvider(provider) {
@@ -100,7 +109,40 @@ function normalizeEventIndex(index) {
     return result;
 }
 
-function parseEventBlocks(eventLog) {
+function escapeXmlAttribute(value) {
+    return cleanString(String(value ?? ''))
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+}
+
+function decodeXmlAttribute(value) {
+    return cleanString(value)
+        .replaceAll('&quot;', '"')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&');
+}
+
+function readAttribute(attrs, name) {
+    const match = attrs.match(new RegExp(`\\b${name}="([^"]*)"`, 'i'));
+    return match ? decodeXmlAttribute(match[1]) : '';
+}
+
+export function formatMemoryEventBlock({ chatId = '', messageId = '', sourceSignature = '', eventText = '' } = {}) {
+    const normalizedMessageId = cleanString(String(messageId ?? '')).trim();
+    const content = cleanString(eventText).trim();
+    if (!normalizedMessageId || !content) return '';
+
+    return [
+        `<MEMORY_EVENT chat_id="${escapeXmlAttribute(chatId)}" message_id="${escapeXmlAttribute(normalizedMessageId)}" source_signature="${escapeXmlAttribute(sourceSignature)}">`,
+        content,
+        '</MEMORY_EVENT>',
+    ].join('\n');
+}
+
+function parseLegacyEventBlocks(eventLog) {
     const text = cleanString(eventLog);
     if (!text.trim()) return [];
 
@@ -114,22 +156,71 @@ function parseEventBlocks(eventLog) {
     if (!matches.length) return [];
     return matches.map((item, index) => {
         const end = matches[index + 1]?.start ?? text.length;
+        const blockText = text.slice(item.start, end).trim();
         return {
+            chatId: '',
             messageId: item.id,
-            text: text.slice(item.start, end).trim(),
+            sourceSignature: '',
+            eventText: blockText,
+            text: blockText,
         };
     }).filter((entry) => entry.text);
+}
+
+export function parseMemoryEventBlocks(eventLog) {
+    const text = cleanString(eventLog);
+    if (!text.trim()) return [];
+
+    const modern = [];
+    const regex = /<MEMORY_EVENT\b([^>]*)>([\s\S]*?)<\/MEMORY_EVENT>/gi;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const attrs = match[1] ?? '';
+        const eventText = cleanString(match[2]).trim();
+        const messageId = readAttribute(attrs, 'message_id').trim();
+        if (!messageId || !eventText) continue;
+        modern.push({
+            chatId: readAttribute(attrs, 'chat_id').trim(),
+            messageId,
+            sourceSignature: readAttribute(attrs, 'source_signature').trim(),
+            eventText,
+            text: match[0].trim(),
+        });
+    }
+
+    return modern.length ? modern : parseLegacyEventBlocks(text);
+}
+
+function migrateLegacyEventLogToBlocks(eventLog, chatId, processedSignatures = {}) {
+    const text = cleanString(eventLog);
+    if (!text.trim()) return '';
+    if (/<MEMORY_EVENT\b/i.test(text)) return text;
+
+    const seen = new Set();
+    const blocks = [];
+    for (const event of parseLegacyEventBlocks(text)) {
+        if (seen.has(event.messageId)) continue;
+        seen.add(event.messageId);
+        const block = formatMemoryEventBlock({
+            chatId,
+            messageId: event.messageId,
+            sourceSignature: cleanString(processedSignatures?.[event.messageId]),
+            eventText: event.eventText,
+        });
+        if (block) blocks.push(block);
+    }
+    return blocks.length ? blocks.join('\n\n') : text;
 }
 
 export function buildEventIndexFromLog(eventLog) {
     const seen = new Set();
     const result = [];
-    for (const block of parseEventBlocks(eventLog)) {
+    for (const block of parseMemoryEventBlocks(eventLog)) {
         if (seen.has(block.messageId)) continue;
         seen.add(block.messageId);
         result.push({
             messageId: block.messageId,
-            ...fallbackIndexPayload(block.text),
+            ...fallbackIndexPayload(block.eventText || block.text),
         });
     }
     return result;
@@ -147,7 +238,6 @@ export function upsertEventIndexEntry(index, messageId, payload) {
     return result;
 }
 
-
 function normalizeFailedMessages(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
     const result = {};
@@ -161,6 +251,7 @@ function normalizeFailedMessages(value) {
             lastError: cleanString(raw.lastError),
             failedAt: Number.isFinite(Number(raw.failedAt)) ? Number(raw.failedAt) : 0,
             messageText: cleanString(raw.messageText),
+            sourceSignature: cleanString(raw.sourceSignature),
         };
     }
     return result;
@@ -177,7 +268,10 @@ function normalizeCardMemory(card, character = null) {
     const processedMessageIds = source.processedMessageIds && typeof source.processedMessageIds === 'object'
         ? { ...source.processedMessageIds }
         : Object.fromEntries(Object.keys(processedSignatures).map((key) => [key, true]));
-    const eventLog = cleanString(source.eventLog);
+    const chatId = normalizedCharacter?.chatId ?? '';
+    const eventLog = chatId
+        ? migrateLegacyEventLogToBlocks(source.eventLog, chatId, processedSignatures)
+        : cleanString(source.eventLog);
     const storedIndex = normalizeEventIndex(source.eventIndex);
     const fallbackIndex = buildEventIndexFromLog(eventLog);
     const indexedIds = new Set(storedIndex.map((entry) => entry.messageId));
@@ -201,6 +295,21 @@ function normalizeCardMemory(card, character = null) {
         failedMessages,
         updatedAt: Number.isFinite(Number(source.updatedAt)) ? Number(source.updatedAt) : 0,
     };
+}
+
+function assignNormalizedCard(card, normalized) {
+    card.character = normalized.character;
+    card.enabled = normalized.enabled;
+    card.autoRelevantEnabled = normalized.autoRelevantEnabled;
+    card.fullInjectNext = normalized.fullInjectNext;
+    card.eventLog = normalized.eventLog;
+    card.eventIndex = normalized.eventIndex;
+    card.processedMessageIds = normalized.processedMessageIds;
+    card.processedSignatures = normalized.processedSignatures;
+    card.failedMessages = normalized.failedMessages;
+    card.updatedAt = normalized.updatedAt;
+    delete card.injectEnabled;
+    return card;
 }
 
 export function ensureMemorySettings(settings) {
@@ -227,34 +336,36 @@ export function ensureMemorySettings(settings) {
 
     for (const [key, rawCard] of Object.entries(memory.cards)) {
         const card = rawCard && typeof rawCard === 'object' ? rawCard : {};
+        const fallbackKey = key.includes('::chat:') ? key.split('::chat:')[0] : key;
         const normalized = normalizeCardMemory(card, card.character?.key ? card.character : {
-            key,
+            key: fallbackKey,
             avatar: cleanString(card.character?.avatar),
             name: cleanString(card.character?.name),
         });
-
-        card.character = normalized.character;
-        card.enabled = normalized.enabled;
-        card.autoRelevantEnabled = normalized.autoRelevantEnabled;
-        card.fullInjectNext = normalized.fullInjectNext;
-        card.eventLog = normalized.eventLog;
-        card.eventIndex = normalized.eventIndex;
-        card.processedMessageIds = normalized.processedMessageIds;
-        card.processedSignatures = normalized.processedSignatures;
-        card.failedMessages = normalized.failedMessages;
-        card.updatedAt = normalized.updatedAt;
-        delete card.injectEnabled;
-        memory.cards[key] = card;
+        memory.cards[key] = assignNormalizedCard(card, normalized);
     }
 
     return memory;
+}
+
+function mostRecentCardDefaults(memory, characterKey) {
+    let candidate = null;
+    for (const card of Object.values(memory.cards)) {
+        if (card?.character?.key !== characterKey) continue;
+        if (!candidate || Number(card.updatedAt) > Number(candidate.updatedAt)) candidate = card;
+    }
+    return candidate ? {
+        enabled: candidate.enabled === true,
+        autoRelevantEnabled: candidate.autoRelevantEnabled === true,
+    } : null;
 }
 
 export function getCardMemory(settings, character) {
     const normalizedCharacter = normalizeCharacter(character);
     if (!normalizedCharacter) return null;
     const memory = ensureMemorySettings(settings);
-    return memory.cards[normalizedCharacter.key] ?? null;
+    const key = memoryStorageKey(normalizedCharacter);
+    return memory.cards[key] ?? null;
 }
 
 export function getOrCreateCardMemory(settings, character) {
@@ -262,15 +373,31 @@ export function getOrCreateCardMemory(settings, character) {
     if (!normalizedCharacter) return null;
 
     const memory = ensureMemorySettings(settings);
-    const existing = memory.cards[normalizedCharacter.key];
+    const storageKey = memoryStorageKey(normalizedCharacter);
+    const existing = memory.cards[storageKey];
 
     if (existing) {
         existing.character = normalizedCharacter;
+        if (normalizedCharacter.chatId && !/<MEMORY_EVENT\b/i.test(existing.eventLog) && existing.eventLog.trim()) {
+            existing.eventLog = migrateLegacyEventLogToBlocks(existing.eventLog, normalizedCharacter.chatId, existing.processedSignatures);
+        }
         return existing;
     }
 
-    const created = normalizeCardMemory({}, normalizedCharacter);
-    memory.cards[normalizedCharacter.key] = created;
+    if (normalizedCharacter.chatId && memory.cards[normalizedCharacter.key]) {
+        const legacy = memory.cards[normalizedCharacter.key];
+        delete memory.cards[normalizedCharacter.key];
+        const normalized = normalizeCardMemory(legacy, normalizedCharacter);
+        memory.cards[storageKey] = assignNormalizedCard(legacy, normalized);
+        return memory.cards[storageKey];
+    }
+
+    const defaults = mostRecentCardDefaults(memory, normalizedCharacter.key);
+    const created = normalizeCardMemory({
+        enabled: defaults?.enabled === true,
+        autoRelevantEnabled: defaults?.autoRelevantEnabled === true,
+    }, normalizedCharacter);
+    memory.cards[storageKey] = created;
     return created;
 }
 
@@ -377,9 +504,9 @@ OUTPUT:
 Return ONLY valid JSON with this exact shape:
 {"has_event": true|false, "event_text": "...", "index": {"summary":"...","actors":["..."],"locations":["..."],"topics":["..."],"entities":["..."],"related_ids":["..."]}}
 If nothing new is worth preserving, use false, an empty event_text, and omit index or set it to null.
-When writing event_text, include the source Message ID so future entries can reference it. Use the same language as the existing Event Log; if it is empty, use the language of the new narrative.`;
+Do NOT add XML/block wrappers to event_text; the extension adds the source chat/message metadata block itself. Use the same language as the existing Event Log; if it is empty, use the language of the new narrative.`;
 
-    const user = `Card: ${name}\nMessage ID: ${messageId}\n\n=== COMPLETE EXISTING EVENT LOG ===\n${existingLog || '(empty)'}\n=== END EVENT LOG ===\n\n=== CANONICAL NARRATIVE THAT ACTUALLY OCCURRED ===\n${canonical || '(no canonical narrative extracted)'}\n=== END CANONICAL NARRATIVE ===\n\n=== FULL ASSISTANT RESPONSE FOR AUXILIARY CONTEXT ===\n${cleanString(fullResponse)}\n=== END FULL RESPONSE ===`;
+    const user = `Card: ${name}\nChat ID: ${cleanString(character?.chatId) || '(unknown)'}\nMessage ID: ${messageId}\n\n=== COMPLETE EXISTING EVENT LOG ===\n${existingLog || '(empty)'}\n=== END EVENT LOG ===\n\n=== CANONICAL NARRATIVE THAT ACTUALLY OCCURRED ===\n${canonical || '(no canonical narrative extracted)'}\n=== END CANONICAL NARRATIVE ===\n\n=== FULL ASSISTANT RESPONSE FOR AUXILIARY CONTEXT ===\n${cleanString(fullResponse)}\n=== END FULL RESPONSE ===`;
 
     return [
         { role: 'system', content: system },
@@ -465,7 +592,7 @@ The reason is diagnostic only. The roleplay model will never see this selector p
     const compactIndex = index.length
         ? index.map(formatIndexEntry).join('\n')
         : '(empty)';
-    const user = `Card: ${name}\n\n=== CURRENT USER PROMPT ===\n${cleanString(userPrompt)}\n=== END CURRENT USER PROMPT ===\n\n=== RECENT ASSISTANT CONTEXT ===\n${cleanString(recentAssistant) || '(none)'}\n=== END RECENT CONTEXT ===\n\n=== HIDDEN EVENT INDEX ===\n${compactIndex}\n=== END HIDDEN INDEX ===`;
+    const user = `Card: ${name}\nChat ID: ${cleanString(character?.chatId) || '(unknown)'}\n\n=== CURRENT USER PROMPT ===\n${cleanString(userPrompt)}\n=== END CURRENT USER PROMPT ===\n\n=== RECENT ASSISTANT CONTEXT ===\n${cleanString(recentAssistant) || '(none)'}\n=== END RECENT CONTEXT ===\n\n=== HIDDEN EVENT INDEX ===\n${compactIndex}\n=== END HIDDEN INDEX ===`;
 
     return [
         { role: 'system', content: system },
@@ -500,7 +627,7 @@ export function selectEventTextByIds(eventLog, relevantIds) {
     if (!wanted.size) return '';
     const seen = new Set();
     const selected = [];
-    for (const block of parseEventBlocks(eventLog)) {
+    for (const block of parseMemoryEventBlocks(eventLog)) {
         if (!wanted.has(block.messageId) || seen.has(block.messageId)) continue;
         seen.add(block.messageId);
         selected.push(block.text);
@@ -516,4 +643,112 @@ export function createMessageSignature(messageId, content) {
         hash = Math.imul(hash, 16777619);
     }
     return `${String(messageId)}:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function isAssistantChatMessage(message) {
+    return Boolean(
+        message
+        && message.is_user !== true
+        && message.is_system !== true
+        && typeof message.mes === 'string',
+    );
+}
+
+function objectFilterByIds(source, allowedIds) {
+    const result = {};
+    if (!source || typeof source !== 'object') return result;
+    for (const [key, value] of Object.entries(source)) {
+        if (allowedIds.has(String(key))) result[key] = value;
+    }
+    return result;
+}
+
+export function reconcileMemoryWithChat(card, chatId, chat) {
+    if (!card || typeof card !== 'object') {
+        return { changed: false, removedEventIds: [] };
+    }
+
+    const normalizedChatId = cleanString(chatId).trim();
+    const currentChat = Array.isArray(chat) ? chat : [];
+    const originalEventLog = cleanString(card.eventLog);
+    const migratedLog = migrateLegacyEventLogToBlocks(originalEventLog, normalizedChatId, card.processedSignatures);
+    const events = parseMemoryEventBlocks(migratedLog);
+    const keptEvents = [];
+    const keptEventIds = new Set();
+    const removedEventIds = [];
+
+    for (const event of events) {
+        const id = String(event.messageId);
+        const numericId = Number(id);
+        const message = Number.isInteger(numericId) && numericId >= 0 ? currentChat[numericId] : null;
+        if (event.chatId && normalizedChatId && event.chatId !== normalizedChatId) {
+            removedEventIds.push(id);
+            continue;
+        }
+        if (!isAssistantChatMessage(message)) {
+            removedEventIds.push(id);
+            continue;
+        }
+        const currentSignature = createMessageSignature(id, message.mes);
+        const expectedSignature = event.sourceSignature || cleanString(card.processedSignatures?.[id]);
+        if (expectedSignature && currentSignature !== expectedSignature) {
+            removedEventIds.push(id);
+            continue;
+        }
+        if (keptEventIds.has(id)) continue;
+        keptEventIds.add(id);
+        keptEvents.push(formatMemoryEventBlock({
+            chatId: normalizedChatId || event.chatId,
+            messageId: id,
+            sourceSignature: expectedSignature || currentSignature,
+            eventText: event.eventText,
+        }));
+    }
+
+    const nextEventLog = keptEvents.join('\n\n');
+    const nextEventIndex = normalizeEventIndex(card.eventIndex).filter((entry) => keptEventIds.has(String(entry.messageId)));
+
+    const validProcessedIds = new Set();
+    const nextProcessedSignatures = {};
+    for (const key of Object.keys(card.processedMessageIds ?? {})) {
+        const numericId = Number(key);
+        const message = Number.isInteger(numericId) && numericId >= 0 ? currentChat[numericId] : null;
+        if (!isAssistantChatMessage(message)) continue;
+        const signature = createMessageSignature(key, message.mes);
+        const expected = cleanString(card.processedSignatures?.[key]);
+        if (expected && signature !== expected) continue;
+        validProcessedIds.add(String(key));
+        nextProcessedSignatures[key] = expected || signature;
+    }
+    const nextProcessedIds = objectFilterByIds(card.processedMessageIds, validProcessedIds);
+
+    const nextFailed = {};
+    for (const [key, failed] of Object.entries(card.failedMessages ?? {})) {
+        const numericId = Number(key);
+        const message = Number.isInteger(numericId) && numericId >= 0 ? currentChat[numericId] : null;
+        if (!isAssistantChatMessage(message)) continue;
+        if (failed?.messageText && failed.messageText !== message.mes) continue;
+        const signature = createMessageSignature(key, message.mes);
+        if (failed?.sourceSignature && failed.sourceSignature !== signature) continue;
+        nextFailed[key] = { ...failed, sourceSignature: failed?.sourceSignature || signature };
+    }
+
+    const changed = nextEventLog !== originalEventLog
+        || JSON.stringify(nextEventIndex) !== JSON.stringify(card.eventIndex ?? [])
+        || JSON.stringify(nextProcessedIds) !== JSON.stringify(card.processedMessageIds ?? {})
+        || JSON.stringify(nextProcessedSignatures) !== JSON.stringify(card.processedSignatures ?? {})
+        || JSON.stringify(nextFailed) !== JSON.stringify(card.failedMessages ?? {});
+
+    card.eventLog = nextEventLog;
+    card.eventIndex = nextEventIndex;
+    card.processedMessageIds = nextProcessedIds;
+    card.processedSignatures = nextProcessedSignatures;
+    card.failedMessages = nextFailed;
+    if (!card.eventLog.trim()) card.fullInjectNext = false;
+
+    return {
+        changed,
+        removedEventIds: [...new Set(removedEventIds)],
+        keptEventIds: [...keptEventIds],
+    };
 }
