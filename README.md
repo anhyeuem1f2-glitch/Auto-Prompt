@@ -242,3 +242,13 @@ Auto Prompt + MEMORY_CONTEXT → một system message cuối
 ```
 
 Lưu ý: Memory recorder vẫn đọc toàn bộ Event Log để liên kết sự kiện dài hạn chính xác. Tối ưu v0.3.1 tập trung vào **context của model chính**, không cắt ngắn dữ liệu recorder dùng để hiểu lịch sử.
+
+
+## v0.3.2 — Có thể hủy Full Memory trước khi gửi
+
+- Nút **Bơm toàn bộ ký ức vào lượt kế tiếp** giờ là toggle thật sự.
+- Bấm lần đầu: xếp full Event Log cho generation kế tiếp.
+- Khi đã xếp, nút đổi thành **Hủy bơm toàn bộ ký ức ở lượt kế tiếp**.
+- Bấm lần hai trước khi generate: hủy cờ `fullInjectNext`, lượt kế tiếp quay lại Auto Relevant bình thường.
+- Nếu Event Log bị xóa sau khi đã xếp full-memory, nút vẫn giữ khả năng bấm để hủy; không thể rơi vào trạng thái đã xếp nhưng nút bị khóa.
+- Quy tắc đóng gói release: `Auto-prompt.zip` luôn phải chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng với release hiện tại.

@@ -17,6 +17,7 @@ import {
     parseMemoryModelResponse,
     appendEventText,
     createMessageSignature,
+    toggleFullInjectNext,
 } from '../src/memory-core.js';
 
 const alice = { key: 'avatar:Alice.png', avatar: 'Alice.png', name: 'Alice' };
@@ -77,6 +78,21 @@ test('getMemoryInjectionText only returns full log for one-shot full injection',
     assert.match(text, /EVENT A/);
     assert.match(text, /EVENT B/);
     assert.match(text, /only when relevant/i);
+});
+
+
+
+test('toggleFullInjectNext schedules and cancels the one-shot full-memory injection', () => {
+    const root = {};
+    ensureMemorySettings(root);
+    const card = getOrCreateCardMemory(root, alice);
+    card.eventLog = 'Message ID 1: EVENT A';
+
+    assert.equal(toggleFullInjectNext(card), true);
+    assert.equal(card.fullInjectNext, true);
+
+    assert.equal(toggleFullInjectNext(card), false);
+    assert.equal(card.fullInjectNext, false);
 });
 
 test('extractCanonicalNarrative prefers actual story_scene and parallel_line while excluding planning', () => {

@@ -217,6 +217,14 @@ Thêm Event Memory nhẹ theo card để một AI phụ tự ghi các sự kiệ
 
 ---
 
+
+## Quy tắc bàn giao bắt buộc từ v0.3.2
+
+- Mọi release ZIP phải có root `Auto-prompt/`.
+- Bên trong ZIP **luôn phải có `BAN_GIAO_DU_AN.md`**.
+- File bàn giao phải được cập nhật ở **mỗi đợt sửa/build**, ghi version, nguyên nhân thay đổi, file đã đổi, test đã chạy, giới hạn còn lại và hướng dẫn GitHub.
+- Không phát hành ZIP mới nếu `BAN_GIAO_DU_AN.md` vẫn mô tả release cũ.
+
 # Release v0.3.1 — Relevant Memory Selector
 
 ## Mục tiêu
@@ -284,3 +292,44 @@ Giữ Event Memory chính xác nhưng không paste toàn bộ Event Log vào mod
 - `BAN_GIAO_DU_AN.md`
 
 `src/reminder-core.js`, `src/memory-api.js` và `LICENSE` không đổi ở v0.3.1.
+
+
+---
+
+# Release v0.3.2 — Cancel Full Memory Toggle
+
+## Root cause
+
+- Ở v0.3.1, click handler của nút `Bơm toàn bộ ký ức vào lượt kế tiếp` luôn gán `card.fullInjectNext = true`.
+- Khi cờ đã bật, click lần nữa vẫn tiếp tục gán `true`, vì vậy người dùng không thể hủy trước generation.
+- Ngoài ra, nếu Event Log bị xóa sau khi đã lên lịch full-memory, nút có thể bị disable theo điều kiện log rỗng và càng không thể hủy.
+
+## Fix
+
+- Thêm `toggleFullInjectNext(card)` trong `src/memory-core.js`.
+- Nút full-memory giờ toggle `false → true → false`.
+- Khi đang lên lịch, label đổi thành `Hủy bơm toàn bộ ký ức ở lượt kế tiếp`.
+- Status báo rõ đã lên lịch hoặc đã hủy.
+- Khi `fullInjectNext=true`, nút vẫn clickable kể cả Event Log vừa bị người dùng xóa, để không tạo trạng thái mắc kẹt.
+- Cơ chế consume sau generation thành công vẫn giữ nguyên: nếu không hủy thủ công, full-memory chỉ chạy một lượt rồi tự tắt.
+
+## Verification
+
+- Regression test mới xác nhận `toggleFullInjectNext()` bật và hủy được cờ one-shot.
+- Contract test xác nhận UI có cả label lên lịch và label hủy, đồng thời entry point dùng toggle helper.
+- Full suite + syntax check phải pass trên source và trên ZIP giải nén sạch trước khi bàn giao.
+
+## File thay đổi v0.3.2
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `src/memory-core.js`
+- `test/memory-core.test.mjs`
+- `test/extension-contract.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+## GitHub
+
+Chỉ cần ghi đè/push các file ở danh sách trên.

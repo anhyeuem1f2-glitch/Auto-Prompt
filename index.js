@@ -5,7 +5,7 @@ import {
     resolveCharacterIdentity,
 } from './src/reminder-core.js';
 import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
-import { ensureMemorySettings, getOrCreateCardMemory } from './src/memory-core.js';
+import { ensureMemorySettings, getOrCreateCardMemory, toggleFullInjectNext } from './src/memory-core.js';
 import { loadProviderModels, testProviderConnection } from './src/memory-api.js';
 import { processReceivedAssistantMessage, registerMemoryCaptureHook, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
 
@@ -196,10 +196,11 @@ function renderMemoryPanel(context, settings) {
     }
 
     if (fullNext) {
-        fullNext.disabled = !card || !card.eventLog.trim();
+        fullNext.disabled = !card || (!card.fullInjectNext && !card.eventLog.trim());
         fullNext.textContent = card?.fullInjectNext
-            ? '✓ Sẽ bơm toàn bộ ký ức ở lượt kế tiếp'
+            ? 'Hủy bơm toàn bộ ký ức ở lượt kế tiếp'
             : 'Bơm toàn bộ ký ức vào lượt kế tiếp';
+        fullNext.classList.toggle('st-auto-memory-full-next-active', Boolean(card?.fullInjectNext));
     }
 
     if (eventLog) {
@@ -263,14 +264,20 @@ function bindMemoryControls(context, settings) {
         const character = activeCharacter(context);
         if (!character) return;
         const card = getOrCreateCardMemory(settings, character);
-        if (!card.eventLog.trim()) {
+        if (!card.fullInjectNext && !card.eventLog.trim()) {
             setMemoryStatus('warning', 'Nhật ký sự kiện đang trống, không có gì để bơm.', character.key);
             renderMemoryPanel(context, settings);
             return;
         }
-        card.fullInjectNext = true;
+        const scheduled = toggleFullInjectNext(card);
         card.updatedAt = Date.now();
-        setMemoryStatus('success', '✓ Đã xếp toàn bộ Memory cho lượt generation kế tiếp.', character.key);
+        setMemoryStatus(
+            scheduled ? 'success' : 'info',
+            scheduled
+                ? '✓ Đã xếp toàn bộ Memory cho lượt generation kế tiếp. Bấm lại nút để hủy.'
+                : 'Đã hủy bơm toàn bộ Memory ở lượt kế tiếp.',
+            character.key,
+        );
         context.saveSettingsDebounced();
         renderMemoryPanel(context, settings);
         renderStatus(context, settings);

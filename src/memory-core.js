@@ -274,6 +274,12 @@ export function buildMemoryContextText(eventText, cardName = 'Current card', mod
     ].join('\n');
 }
 
+export function toggleFullInjectNext(card) {
+    if (!card || typeof card !== 'object') return false;
+    card.fullInjectNext = !Boolean(card.fullInjectNext);
+    return card.fullInjectNext;
+}
+
 export function getMemoryInjectionText(settings, character) {
     const card = getCardMemory(settings, character);
     if (!card?.fullInjectNext) return '';

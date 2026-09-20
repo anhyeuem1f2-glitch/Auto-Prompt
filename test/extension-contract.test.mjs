@@ -6,13 +6,13 @@ async function read(path) {
     return readFile(new URL(path, import.meta.url), 'utf8');
 }
 
-test('manifest loads the extension entry point and stylesheet at v0.3.1', async () => {
+test('manifest loads the extension entry point and stylesheet at v0.3.2', async () => {
     const manifest = JSON.parse(await read('../manifest.json'));
 
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.3.1');
+    assert.equal(manifest.version, '0.3.2');
     assert.equal(Object.hasOwn(manifest, 'author'), false);
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
@@ -68,6 +68,8 @@ test('entry point exposes optional per-card Event Memory controls and provider m
     assert.match(source, /Nhật ký sự kiện/);
     assert.match(source, /Tự chọn ký ức liên quan/);
     assert.match(source, /Bơm toàn bộ ký ức vào lượt kế tiếp/);
+    assert.match(source, /Hủy bơm toàn bộ ký ức ở lượt kế tiếp/);
+    assert.match(source, /toggleFullInjectNext\(card\)/);
 });
 
 test('entry point wires post-response memory capture and provider actions', async () => {
