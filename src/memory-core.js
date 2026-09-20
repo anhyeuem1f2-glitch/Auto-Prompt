@@ -257,6 +257,32 @@ function normalizeFailedMessages(value) {
     return result;
 }
 
+function normalizeFailedSelector(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const userPrompt = cleanString(value.userPrompt);
+    if (!userPrompt.trim()) return null;
+    return {
+        userPrompt,
+        recentAssistant: cleanString(value.recentAssistant),
+        attempts: Number.isFinite(Number(value.attempts)) ? Number(value.attempts) : 0,
+        lastError: cleanString(value.lastError),
+        failedAt: Number.isFinite(Number(value.failedAt)) ? Number(value.failedAt) : 0,
+    };
+}
+
+function normalizePendingSelector(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const userPrompt = cleanString(value.userPrompt);
+    if (!userPrompt.trim()) return null;
+    return {
+        userPrompt,
+        recentAssistant: cleanString(value.recentAssistant),
+        relevantIds: uniqueStrings(value.relevantIds ?? value.relevant_ids),
+        reason: cleanString(value.reason),
+        selectedAt: Number.isFinite(Number(value.selectedAt)) ? Number(value.selectedAt) : 0,
+    };
+}
+
 function normalizeCardMemory(card, character = null) {
     const source = card && typeof card === 'object' ? card : {};
     const normalizedCharacter = normalizeCharacter(character)
@@ -282,6 +308,8 @@ function normalizeCardMemory(card, character = null) {
     const autoRelevantEnabled = source.autoRelevantEnabled === true
         || (source.autoRelevantEnabled === undefined && source.injectEnabled === true);
     const failedMessages = normalizeFailedMessages(source.failedMessages);
+    const failedSelector = normalizeFailedSelector(source.failedSelector);
+    const pendingSelector = normalizePendingSelector(source.pendingSelector);
 
     return {
         character: normalizedCharacter,
@@ -293,6 +321,8 @@ function normalizeCardMemory(card, character = null) {
         processedMessageIds,
         processedSignatures,
         failedMessages,
+        ...(failedSelector ? { failedSelector } : {}),
+        ...(pendingSelector ? { pendingSelector } : {}),
         updatedAt: Number.isFinite(Number(source.updatedAt)) ? Number(source.updatedAt) : 0,
     };
 }
@@ -307,6 +337,10 @@ function assignNormalizedCard(card, normalized) {
     card.processedMessageIds = normalized.processedMessageIds;
     card.processedSignatures = normalized.processedSignatures;
     card.failedMessages = normalized.failedMessages;
+    if (normalized.failedSelector) card.failedSelector = normalized.failedSelector;
+    else delete card.failedSelector;
+    if (normalized.pendingSelector) card.pendingSelector = normalized.pendingSelector;
+    else delete card.pendingSelector;
     card.updatedAt = normalized.updatedAt;
     delete card.injectEnabled;
     return card;

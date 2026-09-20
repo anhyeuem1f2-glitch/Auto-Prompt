@@ -304,3 +304,17 @@ Trước khi Memory được ghi, Recall hoặc inject, extension so Event Log v
 3. Source cùng Message ID nhưng nội dung đổi → signature khác → xóa event cũ.
 4. Hidden index, processed markers và failed queue được dọn cùng event/source tương ứng.
 5. Nếu log trở thành rỗng, `Bơm toàn bộ ký ức lượt kế tiếp` cũng tự hủy để không giữ trạng thái ma.
+
+## v0.3.5 — Retry riêng cho Memory selector
+
+v0.3.5 tách lỗi **Memory recorder** và lỗi **Memory selector** thành hai luồng độc lập.
+
+- Memory selector tự retry thêm **5 lần**, mỗi lần cách **20 giây**, trước khi bỏ qua Memory cho generation hiện tại.
+- Nếu vẫn thất bại, extension lưu `failedSelector` theo đúng **Card + Chat ID**, gồm prompt người dùng, recent assistant context, số lần thử, lỗi cuối và thời điểm lỗi.
+- UI luôn có nút **Retry Memory selector**. Nút chỉ bật khi selector của chat hiện tại đang có lỗi.
+- `Recall ký ức lỗi (N)` vẫn chỉ dành cho các assistant response chưa ghi được vào Event Log; hai loại lỗi không bị trộn chung.
+- Retry selector thủ công thành công sẽ lưu kết quả chọn event vào `pendingSelector` để **Regenerate với đúng prompt đó** có thể dùng ngay mà không call selector lần nữa.
+- Nếu prompt đã thay đổi, selection chờ cũ bị bỏ và selector chạy lại theo prompt mới để tránh inject Memory sai ngữ cảnh.
+- Nếu manual retry vẫn lỗi, `failedSelector` vẫn được giữ để người dùng có thể bấm lại sau.
+
+Lưu ý: nếu generation đã được gửi đi trong lúc selector thất bại, retry thủ công không thể sửa request đã gửi. Hãy dùng Retry rồi **Regenerate cùng prompt** để áp dụng kết quả Memory vừa khôi phục.

@@ -1,7 +1,7 @@
 # BÀN GIAO DỰ ÁN — ST Auto Prompt Reminder
 
-> **CURRENT: v0.3.4 — Chat-scoped Memory + automatic reconcile**  
-> Memory hiện scope theo **Card + Chat ID**; New Chat có Event Log riêng. Rewind/delete/swipe tự loại ký ức có source message không còn tồn tại hoặc đã thay đổi. Event Log dùng `<MEMORY_EVENT chat_id="..." message_id="..." source_signature="...">` blocks. Retry/Recall v0.3.3, Auto Relevant v0.3.1 và final-system injection vẫn giữ nguyên.
+> **CURRENT: v0.3.5 — Memory selector auto-retry + manual retry**  
+> Memory selector giờ tự retry 5 lần, cách nhau 20 giây. Nếu vẫn lỗi, failure được lưu theo **Card + Chat ID** và UI bật nút `Retry Memory selector`. Recorder Recall và selector retry là hai queue/luồng riêng. Chat-scoped Memory + reconcile v0.3.4 vẫn giữ nguyên.
 
 
 ## Phiên bản
@@ -511,3 +511,63 @@ Regression mới bao phủ:
 ## GitHub
 
 Chỉ ghi đè/push các file trong danh sách v0.3.4 ở trên. `src/runtime.js`, `src/reminder-core.js`, `src/memory-api.js`, `LICENSE` không đổi trong release này.
+
+---
+
+# CURRENT RELEASE — v0.3.5 Memory Selector Retry + Manual Retry
+
+## Root cause
+
+v0.3.4 chỉ có retry/failed queue cho **Memory recorder** (`failedMessages`). Khi Auto Relevant selector gặp lỗi API/503, `selectRelevantMemoryForPrompt()` chỉ trả `reason: error`; lỗi không được retry, không được persist và UI không có nút retry selector. Vì vậy ảnh thực tế có dòng `Lỗi Memory selector: ...503...` nhưng nút `Recall ký ức lỗi` vẫn bị disable do recorder queue rỗng.
+
+## Fix v0.3.5
+
+- Selector tự retry tối đa 5 lần sau lần gọi đầu tiên, khoảng cách mặc định 20 giây.
+- Progress retry được đẩy lên UI: `Memory selector thất bại · tự thử lại N/5 sau 20 giây`.
+- Hết retry vẫn lỗi thì lưu `failedSelector` trong memory session hiện tại (Card + Chat ID):
+  - `userPrompt`
+  - `recentAssistant`
+  - `attempts`
+  - `lastError`
+  - `failedAt`
+- UI có nút riêng **Retry Memory selector**; không dùng nút recorder `Recall ký ức lỗi`.
+- Manual retry thành công lưu `pendingSelector` gồm prompt/context gốc + relevant IDs + reason.
+- Regenerate với đúng prompt/context gốc sẽ dùng `pendingSelector` một lần, không call selector lại.
+- Prompt mới khác prompt lỗi sẽ bỏ pending selection cũ và chạy selector mới, tránh inject Memory sai tình huống.
+- Manual retry thất bại giữ `failedSelector`, nên nút retry vẫn còn.
+- Selector success bình thường tự clear failure cũ.
+- Không thay đổi Event Log, Memory blocks, chat-scoped reconciliation hay final-system injection.
+
+## Hành vi UI
+
+- `Recall ký ức lỗi (N)`: chỉ dành cho assistant response chưa ghi được vào Event Log.
+- `Retry Memory selector`: chỉ dành cho lỗi chọn Memory trước generation.
+- Khi selector auto-retry cạn 5 lần, status hướng dẫn dùng `Retry Memory selector`.
+- Retry thành công báo số event đã chọn và nhắc rằng kết quả sẵn sàng cho **Regenerate cùng prompt**.
+
+## Verification v0.3.5
+
+Regression mới bao phủ:
+
+- Selector fail 5 lần, chờ đúng 20 giây giữa các lần, rồi có thể thành công ở lần thứ 6.
+- Selector retry exhaustion persist `failedSelector` theo memory session hiện tại.
+- Manual selector retry clear failure và lưu pending selection.
+- Regenerate cùng prompt consume pending selection mà không gọi provider lại.
+- Contract test bắt buộc UI có `Retry Memory selector` và release version `0.3.5`.
+- Full test suite + syntax checks phải pass trên source và trên ZIP giải nén sạch trước bàn giao.
+
+## File thay đổi v0.3.5
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `src/memory-core.js`
+- `src/memory-runtime.js`
+- `test/extension-contract.test.mjs`
+- `test/memory-runtime.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+## Quy tắc bàn giao
+
+Mọi release tiếp theo vẫn phải đóng ZIP với root `Auto-prompt/` và luôn chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng release hiện tại.

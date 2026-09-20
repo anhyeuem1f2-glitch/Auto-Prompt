@@ -7,7 +7,7 @@ import {
 import { applyReminderInjection, registerFinalPromptHook, registerGenerationHook } from './src/runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory, toggleFullInjectNext } from './src/memory-core.js';
 import { loadProviderModels, testProviderConnection } from './src/memory-api.js';
-import { processReceivedAssistantMessage, recallFailedMemoryMessages, registerMemoryCaptureHook, registerMemoryReconcileHooks, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
+import { processReceivedAssistantMessage, recallFailedMemoryMessages, retryFailedMemorySelector, registerMemoryCaptureHook, registerMemoryReconcileHooks, selectRelevantMemoryForPrompt } from './src/memory-runtime.js';
 
 const ROOT_ID = 'st-auto-prompt-reminder-settings';
 const TOGGLE_ID = 'st-auto-prompt-enabled';
@@ -24,6 +24,7 @@ const MEMORY_ENABLED_ID = 'st-auto-memory-enabled';
 const MEMORY_AUTO_RELEVANT_ID = 'st-auto-memory-auto-relevant';
 const MEMORY_FULL_NEXT_ID = 'st-auto-memory-full-next';
 const MEMORY_RECALL_FAILED_ID = 'st-auto-memory-recall-failed';
+const MEMORY_RETRY_SELECTOR_ID = 'st-auto-memory-retry-selector';
 const MEMORY_EVENT_LOG_ID = 'st-auto-memory-event-log';
 const MEMORY_BASE_URL_ID = 'st-auto-memory-base-url';
 const MEMORY_API_KEY_ID = 'st-auto-memory-api-key';
@@ -171,6 +172,9 @@ function getMemoryStatusText(context, settings) {
     }
 
     const recording = card.enabled ? 'Ghi sự kiện: BẬT' : 'Ghi sự kiện: TẮT';
+    if (card.failedSelector) {
+        return `${recording} · ⚠ Memory selector đang lỗi. Có thể bấm Retry Memory selector bằng tay.`;
+    }
     const failedCount = Object.keys(card.failedMessages ?? {}).length;
     if (failedCount > 0) {
         return `${recording} · ⚠ ${failedCount} message chưa được ghi vào Memory. Có thể Recall bằng tay.`;
@@ -211,6 +215,7 @@ function renderMemoryPanel(context, settings) {
     const autoRelevant = document.getElementById(MEMORY_AUTO_RELEVANT_ID);
     const fullNext = document.getElementById(MEMORY_FULL_NEXT_ID);
     const recallFailed = document.getElementById(MEMORY_RECALL_FAILED_ID);
+    const retrySelector = document.getElementById(MEMORY_RETRY_SELECTOR_ID);
     const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
     const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
     const apiKey = document.getElementById(MEMORY_API_KEY_ID);
@@ -253,6 +258,13 @@ function renderMemoryPanel(context, settings) {
             : 'Recall ký ức lỗi';
     }
 
+    if (retrySelector) {
+        retrySelector.disabled = !card || !card.failedSelector;
+        retrySelector.textContent = card?.failedSelector
+            ? 'Retry Memory selector'
+            : 'Retry Memory selector';
+    }
+
     if (eventLog) {
         if (document.activeElement !== eventLog) eventLog.value = card?.eventLog ?? '';
         eventLog.disabled = !card;
@@ -281,6 +293,7 @@ function bindMemoryControls(context, settings) {
     const autoRelevant = document.getElementById(MEMORY_AUTO_RELEVANT_ID);
     const fullNext = document.getElementById(MEMORY_FULL_NEXT_ID);
     const recallFailed = document.getElementById(MEMORY_RECALL_FAILED_ID);
+    const retrySelector = document.getElementById(MEMORY_RETRY_SELECTOR_ID);
     const eventLog = document.getElementById(MEMORY_EVENT_LOG_ID);
     const baseUrl = document.getElementById(MEMORY_BASE_URL_ID);
     const apiKey = document.getElementById(MEMORY_API_KEY_ID);
@@ -373,6 +386,43 @@ function bindMemoryControls(context, settings) {
             setMemoryStatus(
                 'error',
                 `⚠ Recall được ${result.recovered}/${result.total}; còn lỗi: #${result.remainingIds.join(', #')}. Có thể bấm Recall lại sau.`,
+                memoryStatusKey(character),
+            );
+        }
+        renderMemoryPanel(context, settings);
+        renderStatus(context, settings);
+    });
+
+    retrySelector?.addEventListener('click', async () => {
+        const character = activeMemoryCharacter(context);
+        if (!character) return;
+        const card = getOrCreateCardMemory(settings, character);
+        if (!card.failedSelector) {
+            setMemoryStatus('info', 'Không có lỗi Memory selector nào cần retry.', memoryStatusKey(character));
+            renderMemoryPanel(context, settings);
+            return;
+        }
+
+        retrySelector.disabled = true;
+        setMemoryStatus('working', 'Đang retry Memory selector...', memoryStatusKey(character));
+        renderMemoryPanel(context, settings);
+
+        const result = await retryFailedMemorySelector({ context, settings, character });
+        if (result.success) {
+            const detail = result.relevantIds.length
+                ? `đã chọn ${result.relevantIds.length}/${result.totalEvents} event`
+                : 'không có event nào liên quan';
+            setMemoryStatus(
+                'success',
+                `✓ Retry Memory selector thành công · ${detail}. Kết quả sẵn sàng cho Regenerate cùng prompt.`,
+                memoryStatusKey(character),
+            );
+        } else if (result.reason === 'provider-not-configured') {
+            setMemoryStatus('warning', 'Chưa cấu hình Base URL và model cho Memory AI.', memoryStatusKey(character));
+        } else {
+            setMemoryStatus(
+                'error',
+                `Retry Memory selector vẫn thất bại: ${result.error?.message ?? 'Không rõ lỗi'}. Nút retry vẫn được giữ lại.`,
                 memoryStatusKey(character),
             );
         }
@@ -718,6 +768,7 @@ function createSettingsPanel(context, settings) {
 
                 <button id="${MEMORY_FULL_NEXT_ID}" type="button" class="menu_button st-auto-memory-full-next">Bơm toàn bộ ký ức vào lượt kế tiếp</button>
                 <button id="${MEMORY_RECALL_FAILED_ID}" type="button" class="menu_button st-auto-memory-recall-failed">Recall ký ức lỗi</button>
+                <button id="${MEMORY_RETRY_SELECTOR_ID}" type="button" class="menu_button st-auto-memory-retry-selector">Retry Memory selector</button>
 
                 <div class="st-auto-memory-provider">
                     <b>Memory AI Provider</b>
@@ -835,7 +886,7 @@ async function init() {
                 });
                 if (result.reason === 'error') {
                     const key = memoryStatusKey(character);
-                    setMemoryStatus('error', `Lỗi Memory selector: ${result.error?.message ?? 'Không rõ lỗi'}`, key);
+                    setMemoryStatus('error', `Lỗi Memory selector sau 5 lần retry: ${result.error?.message ?? 'Không rõ lỗi'}. Dùng “Retry Memory selector” để thử lại bằng tay.`, key);
                 }
                 return result;
             },
@@ -916,7 +967,7 @@ async function init() {
     }
 
     createSettingsPanel(context, settings);
-    console.log('[ST Auto Prompt Reminder] Loaded v0.3.4.');
+    console.log('[ST Auto Prompt Reminder] Loaded v0.3.5.');
 }
 
 export function onDisable() {

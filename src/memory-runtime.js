@@ -218,6 +218,11 @@ export async function selectRelevantMemoryForPrompt({
     recentAssistant = '',
     requestMemorySelection = requestMemoryUpdateDefault,
     context = null,
+    now = Date.now,
+    wait = sleep,
+    maxRetries = DEFAULT_RETRY_COUNT,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    onRetry = () => {},
 }) {
     const card = getOrCreateCardMemory(settings, character);
     if (character?.chatId && context) {
@@ -243,7 +248,36 @@ export async function selectRelevantMemoryForPrompt({
     }
 
     if (!card.autoRelevantEnabled) return emptySelection('auto-relevant-disabled', totalEvents);
-    if (!cleanPrompt(userPrompt)) return emptySelection('empty-user-prompt', totalEvents);
+    const normalizedPrompt = cleanPrompt(userPrompt);
+    const normalizedRecent = cleanPrompt(recentAssistant);
+    if (!normalizedPrompt) return emptySelection('empty-user-prompt', totalEvents);
+
+    const pending = card.pendingSelector;
+    if (pending && pending.userPrompt === normalizedPrompt && cleanPrompt(pending.recentAssistant) === normalizedRecent) {
+        const relevantIds = Array.isArray(pending.relevantIds) ? pending.relevantIds.map(String) : [];
+        const selectedText = selectEventTextByIds(card.eventLog, relevantIds);
+        card.pendingSelector = null;
+        card.updatedAt = now();
+        context?.saveSettingsDebounced?.();
+        if (!selectedText) {
+            return {
+                ...emptySelection(pending.reason || 'manual-retry-unrelated', totalEvents),
+                relevantIds: [],
+            };
+        }
+        return {
+            mode: 'relevant',
+            text: buildMemoryContextText(selectedText, cardName, 'relevant'),
+            relevantIds,
+            totalEvents,
+            reason: pending.reason || 'manual-retry',
+            consumeFullNext: false,
+        };
+    }
+    if (pending) {
+        card.pendingSelector = null;
+        context?.saveSettingsDebounced?.();
+    }
 
     const memory = ensureMemorySettings(settings);
     if (!providerConfigured(memory.provider)) {
@@ -252,8 +286,93 @@ export async function selectRelevantMemoryForPrompt({
 
     const messages = buildSelectorMessages({
         character,
-        userPrompt,
-        recentAssistant,
+        userPrompt: normalizedPrompt,
+        recentAssistant: normalizedRecent,
+        eventIndex: card.eventIndex,
+    });
+
+    let attempts = 0;
+    let lastError = null;
+    while (attempts <= maxRetries) {
+        attempts += 1;
+        try {
+            const content = await requestMemorySelection(memory.provider, messages);
+            const parsed = parseMemorySelectionResponse(content);
+            const validIds = new Set((card.eventIndex ?? []).map((entry) => String(entry.messageId)));
+            const relevantIds = parsed.relevantIds.filter((id) => validIds.has(String(id)));
+            const selectedText = selectEventTextByIds(card.eventLog, relevantIds);
+            card.failedSelector = null;
+            card.updatedAt = now();
+            context?.saveSettingsDebounced?.();
+
+            if (!selectedText) {
+                return {
+                    ...emptySelection(parsed.reason || 'unrelated', totalEvents),
+                    relevantIds: [],
+                };
+            }
+
+            return {
+                mode: 'relevant',
+                text: buildMemoryContextText(selectedText, cardName, 'relevant'),
+                relevantIds,
+                totalEvents,
+                reason: parsed.reason,
+                consumeFullNext: false,
+            };
+        } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (attempts > maxRetries) break;
+            onRetry({
+                retryNumber: attempts,
+                maxRetries,
+                retryDelayMs,
+                error: lastError,
+            });
+            await wait(retryDelayMs);
+        }
+    }
+
+    card.failedSelector = {
+        userPrompt: normalizedPrompt,
+        recentAssistant: normalizedRecent,
+        attempts,
+        lastError: lastError?.message ?? 'Unknown Memory selector error',
+        failedAt: now(),
+    };
+    card.updatedAt = now();
+    context?.saveSettingsDebounced?.();
+    return {
+        ...emptySelection('error', totalEvents),
+        error: lastError ?? new Error('Memory selector retry exhausted.'),
+        attempts,
+    };
+}
+
+export async function retryFailedMemorySelector({
+    settings,
+    character,
+    context = null,
+    requestMemorySelection = requestMemoryUpdateDefault,
+    now = Date.now,
+}) {
+    const card = getOrCreateCardMemory(settings, character);
+    if (character?.chatId && context) {
+        const reconcile = reconcileMemoryWithChat(card, character.chatId, context?.chat);
+        if (reconcile.changed) context?.saveSettingsDebounced?.();
+    }
+    const failed = card?.failedSelector;
+    if (!failed) return { retried: false, success: false, reason: 'no-failed-selector', relevantIds: [] };
+
+    const memory = ensureMemorySettings(settings);
+    if (!providerConfigured(memory.provider)) {
+        return { retried: false, success: false, reason: 'provider-not-configured', relevantIds: [] };
+    }
+
+    const messages = buildSelectorMessages({
+        character,
+        userPrompt: failed.userPrompt,
+        recentAssistant: failed.recentAssistant,
         eventIndex: card.eventIndex,
     });
 
@@ -262,28 +381,28 @@ export async function selectRelevantMemoryForPrompt({
         const parsed = parseMemorySelectionResponse(content);
         const validIds = new Set((card.eventIndex ?? []).map((entry) => String(entry.messageId)));
         const relevantIds = parsed.relevantIds.filter((id) => validIds.has(String(id)));
-        const selectedText = selectEventTextByIds(card.eventLog, relevantIds);
-
-        if (!selectedText) {
-            return {
-                ...emptySelection(parsed.reason || 'unrelated', totalEvents),
-                relevantIds: [],
-            };
-        }
-
-        return {
-            mode: 'relevant',
-            text: buildMemoryContextText(selectedText, cardName, 'relevant'),
+        card.pendingSelector = {
+            userPrompt: failed.userPrompt,
+            recentAssistant: failed.recentAssistant,
             relevantIds,
-            totalEvents,
             reason: parsed.reason,
-            consumeFullNext: false,
+            selectedAt: now(),
         };
+        card.failedSelector = null;
+        card.updatedAt = now();
+        context?.saveSettingsDebounced?.();
+        return { retried: true, success: true, reason: parsed.reason, relevantIds, totalEvents: card.eventIndex?.length ?? 0 };
     } catch (error) {
-        return {
-            ...emptySelection('error', totalEvents),
-            error: error instanceof Error ? error : new Error(String(error)),
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        card.failedSelector = {
+            ...failed,
+            attempts: Number(failed.attempts || 0) + 1,
+            lastError: normalized.message,
+            failedAt: now(),
         };
+        card.updatedAt = now();
+        context?.saveSettingsDebounced?.();
+        return { retried: true, success: false, reason: 'error', relevantIds: [], error: normalized };
     }
 }
 

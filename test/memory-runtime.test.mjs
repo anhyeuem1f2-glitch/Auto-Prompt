@@ -7,6 +7,7 @@ import {
     reconcileCurrentMemory,
     registerMemoryReconcileHooks,
     recallFailedMemoryMessages,
+    retryFailedMemorySelector,
     selectRelevantMemoryForPrompt,
 } from '../src/memory-runtime.js';
 import { ensureMemorySettings, getOrCreateCardMemory } from '../src/memory-core.js';
@@ -470,4 +471,93 @@ test('registerMemoryReconcileHooks reconciles on chat changes, deletes, and swip
 
     cleanup();
     assert.equal(handlers.size, 0);
+});
+
+
+test('Memory selector retries five times with 20 second gaps before succeeding', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.autoRelevantEnabled = true;
+    card.eventLog = 'Message ID 4: A met B.';
+    card.eventIndex = [{ messageId: '4', summary: 'A met B.', actors: ['A'], locations: [], topics: ['meeting'], entities: [], relatedIds: [] }];
+    const waits = [];
+    const progress = [];
+    let calls = 0;
+    const result = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'Nhắc lại lúc A gặp B.',
+        requestMemorySelection: async () => {
+            calls += 1;
+            if (calls < 6) throw new Error('503 busy');
+            return '{"relevant_ids":["4"],"reason":"meeting"}';
+        },
+        wait: async (ms) => waits.push(ms),
+        onRetry: (info) => progress.push(info),
+    });
+    assert.equal(calls, 6);
+    assert.deepEqual(waits, [20000, 20000, 20000, 20000, 20000]);
+    assert.equal(progress.length, 5);
+    assert.equal(result.mode, 'relevant');
+    assert.equal(card.failedSelector, null);
+});
+
+test('Memory selector persists a failed selector payload after retry exhaustion', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.autoRelevantEnabled = true;
+    card.eventLog = 'Message ID 4: A met B.';
+    card.eventIndex = [{ messageId: '4', summary: 'A met B.', actors: ['A'], locations: [], topics: ['meeting'], entities: [], relatedIds: [] }];
+    let saves = 0;
+    const result = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'Nhắc lại lúc A gặp B.',
+        recentAssistant: 'A đang đứng ngoài cổng.',
+        requestMemorySelection: async () => { throw new Error('503 busy'); },
+        wait: async () => {},
+        now: () => 777,
+        context: { chat: [], saveSettingsDebounced() { saves += 1; } },
+    });
+    assert.equal(result.reason, 'error');
+    assert.equal(card.failedSelector.userPrompt, 'Nhắc lại lúc A gặp B.');
+    assert.equal(card.failedSelector.recentAssistant, 'A đang đứng ngoài cổng.');
+    assert.equal(card.failedSelector.attempts, 6);
+    assert.equal(card.failedSelector.failedAt, 777);
+    assert.match(card.failedSelector.lastError, /503 busy/);
+    assert.ok(saves >= 1);
+});
+
+test('manual selector retry clears failure and caches selection for Regenerate with the same prompt', async () => {
+    const settings = makeSettings();
+    const card = getOrCreateCardMemory(settings, alice);
+    card.autoRelevantEnabled = true;
+    card.eventLog = 'Message ID 4: A met B.';
+    card.eventIndex = [{ messageId: '4', summary: 'A met B.', actors: ['A'], locations: [], topics: ['meeting'], entities: [], relatedIds: [] }];
+    card.failedSelector = { userPrompt: 'Nhắc lại lúc A gặp B.', recentAssistant: 'A waits.', attempts: 6, lastError: '503', failedAt: 1 };
+    const context = { chat: [], saveSettingsDebounced() {} };
+    const retry = await retryFailedMemorySelector({
+        settings,
+        character: alice,
+        context,
+        requestMemorySelection: async () => '{"relevant_ids":["4"],"reason":"meeting"}',
+        now: () => 888,
+    });
+    assert.equal(retry.success, true);
+    assert.deepEqual(retry.relevantIds, ['4']);
+    assert.equal(card.failedSelector, null);
+    assert.equal(card.pendingSelector.userPrompt, 'Nhắc lại lúc A gặp B.');
+
+    let calls = 0;
+    const selected = await selectRelevantMemoryForPrompt({
+        settings,
+        character: alice,
+        userPrompt: 'Nhắc lại lúc A gặp B.',
+        recentAssistant: 'A waits.',
+        requestMemorySelection: async () => { calls += 1; throw new Error('must not call'); },
+    });
+    assert.equal(calls, 0);
+    assert.equal(selected.mode, 'relevant');
+    assert.deepEqual(selected.relevantIds, ['4']);
+    assert.equal(card.pendingSelector, null);
 });
