@@ -967,7 +967,7 @@ async function init() {
     }
 
     createSettingsPanel(context, settings);
-    console.log('[ST Auto Prompt Reminder] Loaded v0.3.5.');
+    console.log('[ST Auto Prompt Reminder] Loaded v0.3.6.');
 }
 
 export function onDisable() {

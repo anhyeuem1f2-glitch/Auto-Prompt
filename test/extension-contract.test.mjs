@@ -6,14 +6,14 @@ async function read(path) {
     return readFile(new URL(path, import.meta.url), 'utf8');
 }
 
-test('manifest loads the extension entry point and stylesheet at v0.3.5', async () => {
+test('manifest includes Tauri-compatible author metadata at v0.3.6', async () => {
     const manifest = JSON.parse(await read('../manifest.json'));
 
     assert.equal(manifest.display_name, 'ST Auto Prompt Reminder');
     assert.equal(manifest.js, 'index.js');
     assert.equal(manifest.css, 'style.css');
-    assert.equal(manifest.version, '0.3.5');
-    assert.equal(Object.hasOwn(manifest, 'author'), false);
+    assert.equal(manifest.version, '0.3.6');
+    assert.equal(manifest.author, 'Unknown');
     assert.equal(manifest.hooks?.disable, 'onDisable');
 });
 

@@ -1,7 +1,7 @@
 # BÀN GIAO DỰ ÁN — ST Auto Prompt Reminder
 
-> **CURRENT: v0.3.5 — Memory selector auto-retry + manual retry**  
-> Memory selector giờ tự retry 5 lần, cách nhau 20 giây. Nếu vẫn lỗi, failure được lưu theo **Card + Chat ID** và UI bật nút `Retry Memory selector`. Recorder Recall và selector retry là hai queue/luồng riêng. Chat-scoped Memory + reconcile v0.3.4 vẫn giữ nguyên.
+> **CURRENT: v0.3.6 — Tauri Tavern manifest compatibility**  
+> Bổ sung `author: "Unknown"` trong `manifest.json` để tương thích loader yêu cầu author metadata (Tauri Tavern theo cấu hình người dùng cung cấp). Toàn bộ logic Memory/selector/retry/chat-scoped của v0.3.5 giữ nguyên.
 
 
 ## Phiên bản
@@ -514,7 +514,7 @@ Chỉ ghi đè/push các file trong danh sách v0.3.4 ở trên. `src/runtime.js
 
 ---
 
-# CURRENT RELEASE — v0.3.5 Memory Selector Retry + Manual Retry
+# Release v0.3.5 — Memory Selector Retry + Manual Retry
 
 ## Root cause
 
@@ -571,3 +571,42 @@ Regression mới bao phủ:
 ## Quy tắc bàn giao
 
 Mọi release tiếp theo vẫn phải đóng ZIP với root `Auto-prompt/` và luôn chứa `BAN_GIAO_DU_AN.md` đã cập nhật đúng release hiện tại.
+
+
+---
+
+# CURRENT RELEASE — v0.3.6 Tauri Tavern Manifest Compatibility
+
+## Mục tiêu
+
+Cho phép extension được loader yêu cầu author metadata nhận diện/cài đặt, cụ thể là Tauri Tavern theo manifest mẫu người dùng cung cấp, mà không thay đổi bất kỳ pipeline Auto Prompt/Memory nào.
+
+## Thay đổi v0.3.6
+
+- `manifest.json`: thêm `"author": "Unknown"`.
+- `manifest.json`: bump `version` từ `0.3.5` lên `0.3.6`.
+- `package.json`: bump `version` lên `0.3.6`.
+- `index.js`: log loaded version đổi sang `v0.3.6`.
+- `test/extension-contract.test.mjs`: contract test bắt buộc manifest phải có `author: "Unknown"` và version `0.3.6`.
+- `README.md`: ghi chú tương thích Tauri Tavern.
+- Không sửa logic prompt manager, final system injection, Event Memory, recorder retry/Recall, Auto Relevant selector, selector retry, memory blocks hay Card + Chat ID reconciliation.
+
+## Verification v0.3.6
+
+- Contract test phải fail trên manifest v0.3.5 không có author trước khi sửa.
+- Sau fix: chạy `npm test` và `npm run check` trên source.
+- Đóng `Auto-prompt.zip` với root `Auto-prompt/`, sau đó giải nén sạch và chạy lại `npm test` + `npm run check`.
+- Xác nhận ZIP chứa `Auto-prompt/BAN_GIAO_DU_AN.md` đã mô tả đúng v0.3.6.
+
+## File thay đổi v0.3.6
+
+- `manifest.json`
+- `package.json`
+- `index.js`
+- `test/extension-contract.test.mjs`
+- `README.md`
+- `BAN_GIAO_DU_AN.md`
+
+## GitHub
+
+Chỉ cần ghi đè/push các file trong danh sách v0.3.6 ở trên.

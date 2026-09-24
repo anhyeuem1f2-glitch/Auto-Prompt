@@ -318,3 +318,12 @@ v0.3.5 tách lỗi **Memory recorder** và lỗi **Memory selector** thành hai 
 - Nếu manual retry vẫn lỗi, `failedSelector` vẫn được giữ để người dùng có thể bấm lại sau.
 
 Lưu ý: nếu generation đã được gửi đi trong lúc selector thất bại, retry thủ công không thể sửa request đã gửi. Hãy dùng Retry rồi **Regenerate cùng prompt** để áp dụng kết quả Memory vừa khôi phục.
+
+
+## v0.3.6 — Tauri Tavern manifest compatibility
+
+- Thêm trường `"author": "Unknown"` vào `manifest.json` để các loader yêu cầu metadata tác giả, gồm Tauri Tavern theo cấu hình được cung cấp, có thể nhận extension.
+- Bump version extension/package lên `0.3.6`.
+- Không thay đổi logic Auto Prompt, Event Memory, retry/Recall, selector hay chat-scoped reconciliation của v0.3.5.
+- Contract test khóa cả `version: 0.3.6` và `author: Unknown` để các release sau không vô tình xóa metadata tương thích.
+- `BAN_GIAO_DU_AN.md` tiếp tục là file bắt buộc trong mọi ZIP release.

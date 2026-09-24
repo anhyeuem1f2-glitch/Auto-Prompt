@@ -5,7 +5,8 @@
   "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "version": "0.3.5",
+  "version": "0.3.6",
+  "author": "Unknown",
   "auto_update": true,
   "hooks": {
     "disable": "onDisable"
